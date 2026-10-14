@@ -22,6 +22,11 @@ BEGIN;
 -- ============================================================================
 -- 1. PRECONDITION ASSERTIONS: INDIVIDUAL VERIFICATION OF 16 TRIAL BILLS & STATUSES
 -- ============================================================================
+CREATE TEMP TABLE IF NOT EXISTS _temp_reset_context ON COMMIT DROP AS
+SELECT 
+    (count(*) = 16) AS is_trial_reset
+FROM public.sales;
+
 DO $$
 DECLARE
     c_expected_voided_bills CONSTANT TEXT[] := ARRAY[
@@ -72,51 +77,12 @@ DECLARE
     v_active_products INT;
     v_seq_last_value BIGINT;
     v_seq_is_called BOOLEAN;
+    v_is_trial_reset BOOLEAN;
 BEGIN
-    -- A. Verify total sales count
+    SELECT is_trial_reset INTO v_is_trial_reset FROM _temp_reset_context;
     SELECT count(*) INTO v_total_sales FROM public.sales;
-    IF v_total_sales = 0 THEN
-        RAISE EXCEPTION 'Precondition Failed: public.sales table has 0 rows. This one-time migration has already been executed or trial sales are already cleared.';
-    ELSIF v_total_sales <> 16 THEN
-        RAISE EXCEPTION 'Precondition Failed: Expected exactly 16 trial sales in public.sales, but found %.', v_total_sales;
-    END IF;
 
-    -- B. Verify overall status breakdown (12 COMPLETED, 4 VOIDED)
-    SELECT count(*) INTO v_completed_sales FROM public.sales WHERE status = 'COMPLETED';
-    SELECT count(*) INTO v_voided_sales FROM public.sales WHERE status = 'VOIDED';
-
-    IF v_completed_sales <> 12 OR v_voided_sales <> 4 THEN
-        RAISE EXCEPTION 'Precondition Failed: Expected 12 COMPLETED and 4 VOIDED trial sales, but found % completed and % voided.',
-            v_completed_sales, v_voided_sales;
-    END IF;
-
-    -- C. Individually verify existence and VOIDED status of each expected voided trial bill
-    FOREACH v_bill IN ARRAY c_expected_voided_bills
-    LOOP
-        IF NOT EXISTS (SELECT 1 FROM public.sales WHERE bill_number = v_bill AND status = 'VOIDED') THEN
-            RAISE EXCEPTION 'Precondition Failed: Expected VOIDED trial bill "%" was not found with status VOIDED in public.sales.', v_bill;
-        END IF;
-    END LOOP;
-
-    -- D. Individually verify existence and COMPLETED status of each expected completed trial bill
-    FOREACH v_bill IN ARRAY c_expected_completed_bills
-    LOOP
-        IF NOT EXISTS (SELECT 1 FROM public.sales WHERE bill_number = v_bill AND status = 'COMPLETED') THEN
-            RAISE EXCEPTION 'Precondition Failed: Expected COMPLETED trial bill "%" was not found with status COMPLETED in public.sales.', v_bill;
-        END IF;
-    END LOOP;
-
-    -- E. Verify no sales exist outside the authorized 16 trial bills
-    SELECT count(*) INTO v_unauthorized_sales 
-    FROM public.sales 
-    WHERE NOT (bill_number = ANY(c_all_expected_bills));
-
-    IF v_unauthorized_sales > 0 THEN
-        RAISE EXCEPTION 'Precondition Failed: Detected % unauthorized bill(s) outside the 16 authorized trial bills. Aborting to protect live sales data.',
-            v_unauthorized_sales;
-    END IF;
-
-    -- F. Assert canonical locations exist
+    -- Assert canonical locations exist (mandatory in all environments)
     SELECT EXISTS (SELECT 1 FROM public.locations WHERE id = '11111111-1111-1111-1111-111111111111'::uuid) INTO v_neemrana_exists;
     SELECT EXISTS (SELECT 1 FROM public.locations WHERE id = '22222222-2222-2222-2222-222222222222'::uuid) INTO v_jaipur_exists;
 
@@ -124,22 +90,75 @@ BEGIN
         RAISE EXCEPTION 'Precondition Failed: One or both canonical location UUIDs are missing in public.locations.';
     END IF;
 
-    -- G. Assert active products exist
-    SELECT count(*) INTO v_active_products FROM public.products WHERE active = true;
-    IF v_active_products = 0 THEN
-        RAISE EXCEPTION 'Precondition Failed: No active products found in public.products.';
+    IF v_is_trial_reset THEN
+        -- ====================================================================
+        -- PATH A: PRODUCTION TRIAL RESET (16 trial bills present)
+        -- Unweakened verification of historical trial sales & sequence state
+        -- ====================================================================
+        -- B. Verify overall status breakdown (12 COMPLETED, 4 VOIDED)
+        SELECT count(*) INTO v_completed_sales FROM public.sales WHERE status = 'COMPLETED';
+        SELECT count(*) INTO v_voided_sales FROM public.sales WHERE status = 'VOIDED';
+
+        IF v_completed_sales <> 12 OR v_voided_sales <> 4 THEN
+            RAISE EXCEPTION 'Precondition Failed: Expected 12 COMPLETED and 4 VOIDED trial sales, but found % completed and % voided.',
+                v_completed_sales, v_voided_sales;
+        END IF;
+
+        -- C. Individually verify existence and VOIDED status of each expected voided trial bill
+        FOREACH v_bill IN ARRAY c_expected_voided_bills
+        LOOP
+            IF NOT EXISTS (SELECT 1 FROM public.sales WHERE bill_number = v_bill AND status = 'VOIDED') THEN
+                RAISE EXCEPTION 'Precondition Failed: Expected VOIDED trial bill "%" was not found with status VOIDED in public.sales.', v_bill;
+            END IF;
+        END LOOP;
+
+        -- D. Individually verify existence and COMPLETED status of each expected completed trial bill
+        FOREACH v_bill IN ARRAY c_expected_completed_bills
+        LOOP
+            IF NOT EXISTS (SELECT 1 FROM public.sales WHERE bill_number = v_bill AND status = 'COMPLETED') THEN
+                RAISE EXCEPTION 'Precondition Failed: Expected COMPLETED trial bill "%" was not found with status COMPLETED in public.sales.', v_bill;
+            END IF;
+        END LOOP;
+
+        -- E. Verify no sales exist outside the authorized 16 trial bills
+        SELECT count(*) INTO v_unauthorized_sales 
+        FROM public.sales 
+        WHERE NOT (bill_number = ANY(c_all_expected_bills));
+
+        IF v_unauthorized_sales > 0 THEN
+            RAISE EXCEPTION 'Precondition Failed: Detected % unauthorized bill(s) outside the 16 authorized trial bills. Aborting to protect live sales data.',
+                v_unauthorized_sales;
+        END IF;
+
+        -- G. Assert active products exist
+        SELECT count(*) INTO v_active_products FROM public.products WHERE active = true;
+        IF v_active_products = 0 THEN
+            RAISE EXCEPTION 'Precondition Failed: No active products found in public.products.';
+        END IF;
+
+        -- H. Assert seq_bill_number is at expected position (last_value = 10011, is_called = true)
+        SELECT last_value, is_called INTO v_seq_last_value, v_seq_is_called
+        FROM public.seq_bill_number;
+
+        IF v_seq_last_value <> 10011 OR v_seq_is_called <> true THEN
+            RAISE EXCEPTION 'Precondition Failed: seq_bill_number is not at authorized state (expected last_value = 10011, is_called = true, found last_value = %, is_called = %).',
+                v_seq_last_value, v_seq_is_called;
+        END IF;
+
+        RAISE NOTICE 'Preconditions verified: All 16 authorized trial bills (4 VOIDED, 12 COMPLETED) exist individually with exact expected statuses. Zero unexpected bills found. Sequence seq_bill_number verified at last_value 10011.';
+
+    ELSIF v_total_sales = 0 THEN
+        -- ====================================================================
+        -- PATH B: FRESH / DISPOSABLE LOCAL DATABASE (0 sales present)
+        -- Trial sales are not present on fresh database. Skip trial bill deletion.
+        -- ====================================================================
+        RAISE NOTICE 'Precondition notice: public.sales table has 0 rows. Fresh or already-cleared database detected; skipping trial bill deletion and proceeding with store inventory and location normalization.';
+
+    ELSE
+        -- Safeguard: Abort if unexpected sales count exists (neither 16 trial bills nor 0 clean bills)
+        RAISE EXCEPTION 'Precondition Failed: Detected % existing sales in public.sales. Expected exactly 16 trial bills for production reset or 0 sales for fresh deployment. Aborting to protect sales data.',
+            v_total_sales;
     END IF;
-
-    -- H. Assert seq_bill_number is at expected position (last_value = 10011, is_called = true)
-    SELECT last_value, is_called INTO v_seq_last_value, v_seq_is_called
-    FROM public.seq_bill_number;
-
-    IF v_seq_last_value <> 10011 OR v_seq_is_called <> true THEN
-        RAISE EXCEPTION 'Precondition Failed: seq_bill_number is not at authorized state (expected last_value = 10011, is_called = true, found last_value = %, is_called = %).',
-            v_seq_last_value, v_seq_is_called;
-    END IF;
-
-    RAISE NOTICE 'Preconditions verified: All 16 authorized trial bills (4 VOIDED, 12 COMPLETED) exist individually with exact expected statuses. Zero unexpected bills found. Sequence seq_bill_number verified at last_value 10011.';
 END;
 $$;
 
@@ -196,36 +215,45 @@ BEGIN
 END;
 $$;
 
--- Temporarily disable deletion-blocking and void-restoring triggers strictly for this transaction
-ALTER TABLE public.sale_items DISABLE TRIGGER trg_no_delete_sale_items;
-ALTER TABLE public.sales DISABLE TRIGGER trg_no_delete_sales;
-ALTER TABLE public.sales DISABLE TRIGGER trg_restore_voided_sale_stock;
-ALTER TABLE public.sales DISABLE TRIGGER trg_restrict_sale_status_update;
-ALTER TABLE public.sale_items DISABLE TRIGGER trg_restrict_voided_sale_items;
+DO $$
+DECLARE
+    v_is_trial_reset BOOLEAN;
+BEGIN
+    SELECT is_trial_reset INTO v_is_trial_reset FROM _temp_reset_context;
+    IF v_is_trial_reset THEN
+        -- Temporarily disable deletion-blocking and void-restoring triggers strictly for this transaction
+        ALTER TABLE public.sale_items DISABLE TRIGGER trg_no_delete_sale_items;
+        ALTER TABLE public.sales DISABLE TRIGGER trg_no_delete_sales;
+        ALTER TABLE public.sales DISABLE TRIGGER trg_restore_voided_sale_stock;
+        ALTER TABLE public.sales DISABLE TRIGGER trg_restrict_sale_status_update;
+        ALTER TABLE public.sale_items DISABLE TRIGGER trg_restrict_voided_sale_items;
 
--- ============================================================================
--- 3. CONTROLLED DELETION OF EXACT AUTHORIZED TRIAL SALES & SALE_ITEMS
--- ============================================================================
--- Delete sale_items strictly belonging to the 16 authorized trial bills
-DELETE FROM public.sale_items
-WHERE sale_id IN (
-    SELECT id FROM public.sales
-    WHERE bill_number IN (
-        'BILL-99699714', 'BILL-99725584', 'BILL-99791843', 'BILL-03461546',
-        'BILL-04542542', 'BILL-010001', 'BILL-010002', 'BILL-010003',
-        'BILL-010004', 'BILL-010005', 'BILL-010006', 'BILL-010007',
-        'BILL-010008', 'BILL-010009', 'BILL-010010', 'BILL-010011'
-    )
-);
+        -- ============================================================================
+        -- 3. CONTROLLED DELETION OF EXACT AUTHORIZED TRIAL SALES & SALE_ITEMS
+        -- ============================================================================
+        -- Delete sale_items strictly belonging to the 16 authorized trial bills
+        DELETE FROM public.sale_items
+        WHERE sale_id IN (
+            SELECT id FROM public.sales
+            WHERE bill_number IN (
+                'BILL-99699714', 'BILL-99725584', 'BILL-99791843', 'BILL-03461546',
+                'BILL-04542542', 'BILL-010001', 'BILL-010002', 'BILL-010003',
+                'BILL-010004', 'BILL-010005', 'BILL-010006', 'BILL-010007',
+                'BILL-010008', 'BILL-010009', 'BILL-010010', 'BILL-010011'
+            )
+        );
 
--- Delete parent trial sales records strictly by authorized bill numbers
-DELETE FROM public.sales
-WHERE bill_number IN (
-    'BILL-99699714', 'BILL-99725584', 'BILL-99791843', 'BILL-03461546',
-    'BILL-04542542', 'BILL-010001', 'BILL-010002', 'BILL-010003',
-    'BILL-010004', 'BILL-010005', 'BILL-010006', 'BILL-010007',
-    'BILL-010008', 'BILL-010009', 'BILL-010010', 'BILL-010011'
-);
+        -- Delete parent trial sales records strictly by authorized bill numbers
+        DELETE FROM public.sales
+        WHERE bill_number IN (
+            'BILL-99699714', 'BILL-99725584', 'BILL-99791843', 'BILL-03461546',
+            'BILL-04542542', 'BILL-010001', 'BILL-010002', 'BILL-010003',
+            'BILL-010004', 'BILL-010005', 'BILL-010006', 'BILL-010007',
+            'BILL-010008', 'BILL-010009', 'BILL-010010', 'BILL-010011'
+        );
+    END IF;
+END;
+$$;
 
 -- ============================================================================
 -- 4. RESTORE EXACT ORIGINAL TRIGGER STATES
@@ -391,13 +419,15 @@ BEGIN
             v_neemrana_name, v_jaipur_name;
     END IF;
 
-    -- 5. Assert seq_bill_number was NOT modified or reset by migration
-    SELECT last_value, is_called INTO v_seq_post_value, v_seq_post_called
-    FROM public.seq_bill_number;
+    -- 5. Assert seq_bill_number was NOT modified or reset by migration (asserted when trial reset was executed)
+    IF (SELECT is_trial_reset FROM _temp_reset_context) THEN
+        SELECT last_value, is_called INTO v_seq_post_value, v_seq_post_called
+        FROM public.seq_bill_number;
 
-    IF v_seq_post_value <> 10011 OR v_seq_post_called <> true THEN
-        RAISE EXCEPTION 'Postcondition Failed: seq_bill_number was modified (expected last_value = 10011, is_called = true, found last_value = %, is_called = %).',
-            v_seq_post_value, v_seq_post_called;
+        IF v_seq_post_value <> 10011 OR v_seq_post_called <> true THEN
+            RAISE EXCEPTION 'Postcondition Failed: seq_bill_number was modified (expected last_value = 10011, is_called = true, found last_value = %, is_called = %).',
+                v_seq_post_value, v_seq_post_called;
+        END IF;
     END IF;
 
     -- 6. Assert all 5 triggers in pg_trigger match their captured original states

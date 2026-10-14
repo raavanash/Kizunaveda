@@ -57,3 +57,10 @@ android/.gradle/
 *.env
 *.local.json
 
+# Python virtual environment
+.venv/
+venv/
+
+# Supabase CLI local state
+supabase/.temp/
+supabase/.branches/

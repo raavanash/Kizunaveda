@@ -6,6 +6,21 @@
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- ============================================================================
+-- 0. USER ROLE RESOLUTION HELPER (Available for all functions & policies)
+-- ============================================================================
+CREATE OR REPLACE FUNCTION public.get_current_user_role()
+RETURNS TEXT
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+AS $$
+    SELECT lower(coalesce(
+        auth.jwt() -> 'app_metadata' ->> 'role',
+        ''
+    ));
+$$;
+
+-- ============================================================================
 -- 1. LOCATIONS TABLE
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS public.locations (
@@ -60,6 +75,48 @@ CREATE TABLE IF NOT EXISTS public.raw_material_receipts (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT chk_raw_material_receipt_location CHECK (location_id = '11111111-1111-1111-1111-111111111111'::uuid)
 );
+
+-- ============================================================================
+-- 3B. CLEANUP SUPERSEDED PROTOTYPE OBJECTS (from 20261005000000_inventory_v1.sql)
+-- If prototype tables exist without required two-store location columns,
+-- drop them safely so canonical foundation tables can be created cleanly.
+-- ============================================================================
+DO $$
+BEGIN
+    -- If packing_records exists from prototype schema without location_id, drop it
+    IF EXISTS (
+        SELECT 1 FROM information_schema.tables 
+        WHERE table_schema = 'public' AND table_name = 'packing_records'
+    ) AND NOT EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_schema = 'public' AND table_name = 'packing_records' AND column_name = 'location_id'
+    ) THEN
+        DROP TABLE public.packing_records CASCADE;
+    END IF;
+
+    -- If transfers exists from prototype schema without from_location_id, drop it
+    IF EXISTS (
+        SELECT 1 FROM information_schema.tables 
+        WHERE table_schema = 'public' AND table_name = 'transfers'
+    ) AND NOT EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_schema = 'public' AND table_name = 'transfers' AND column_name = 'from_location_id'
+    ) THEN
+        DROP TABLE public.transfers CASCADE;
+    END IF;
+
+    -- If sales exists from prototype schema without location_id, drop it (and any orphan sale_items)
+    IF EXISTS (
+        SELECT 1 FROM information_schema.tables 
+        WHERE table_schema = 'public' AND table_name = 'sales'
+    ) AND NOT EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_schema = 'public' AND table_name = 'sales' AND column_name = 'location_id'
+    ) THEN
+        DROP TABLE IF EXISTS public.sale_items CASCADE;
+        DROP TABLE public.sales CASCADE;
+    END IF;
+END $$;
 
 -- ============================================================================
 -- 4. PACKING_RECORDS TABLE (Neemrana production, raw consumption & wastage)
@@ -340,18 +397,6 @@ EXECUTE FUNCTION public.fn_check_jaipur_sale_stock();
 -- STRICT ROLE-AWARE ROW LEVEL SECURITY (RLS) POLICIES
 -- ============================================================================
 
-CREATE OR REPLACE FUNCTION public.get_current_user_role()
-RETURNS TEXT
-LANGUAGE sql
-STABLE
-SECURITY DEFINER
-AS $$
-    SELECT lower(coalesce(
-        auth.jwt() -> 'app_metadata' ->> 'role',
-        ''
-    ));
-$$;
-
 ALTER TABLE public.locations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.products ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.raw_materials ENABLE ROW LEVEL SECURITY;
@@ -361,7 +406,16 @@ ALTER TABLE public.transfers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.sales ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.sale_items ENABLE ROW LEVEL SECURITY;
 
--- Drop existing policies safely
+-- Drop existing policies safely (including legacy prototype policies)
+DROP POLICY IF EXISTS "Allow authenticated read products" ON public.products;
+DROP POLICY IF EXISTS "Allow authenticated insert/update products" ON public.products;
+DROP POLICY IF EXISTS "Allow authenticated read packing_records" ON public.packing_records;
+DROP POLICY IF EXISTS "Allow authenticated insert packing_records" ON public.packing_records;
+DROP POLICY IF EXISTS "Allow authenticated read transfers" ON public.transfers;
+DROP POLICY IF EXISTS "Allow authenticated insert/update transfers" ON public.transfers;
+DROP POLICY IF EXISTS "Allow authenticated read sales" ON public.sales;
+DROP POLICY IF EXISTS "Allow authenticated insert sales" ON public.sales;
+
 DROP POLICY IF EXISTS "locations_select_policy" ON public.locations;
 DROP POLICY IF EXISTS "products_select_policy" ON public.products;
 DROP POLICY IF EXISTS "products_insert_update_policy" ON public.products;

@@ -235,9 +235,26 @@ BEGIN
 
     RAISE NOTICE 'TEST 8 PASSED: Business formula exact match! Neemrana finished=20, Jaipur finished=675, Discrepancy=5.';
 
-    -- Safe deactivation cleanup for master records (compatible with non-cascading foreign keys)
-    UPDATE public.products SET active = false WHERE id = v_test_product_id;
-    UPDATE public.raw_materials SET active = false WHERE id = v_test_raw_mat_id;
+    -- Safe teardown of verification test fixtures (prevents test data from polluting subsequent migrations)
+    EXECUTE 'ALTER TABLE public.sale_items DISABLE TRIGGER trg_no_delete_sale_items';
+    EXECUTE 'ALTER TABLE public.sales DISABLE TRIGGER trg_no_delete_sales';
+    EXECUTE 'ALTER TABLE public.transfers DISABLE TRIGGER trg_no_delete_transfers';
+    EXECUTE 'ALTER TABLE public.packing_records DISABLE TRIGGER trg_no_delete_packing';
+    EXECUTE 'ALTER TABLE public.raw_material_receipts DISABLE TRIGGER trg_no_delete_raw_receipts';
+
+    DELETE FROM public.sale_items WHERE sale_id = v_sale_id;
+    DELETE FROM public.sales WHERE id = v_sale_id;
+    DELETE FROM public.transfers WHERE id = v_transfer_id;
+    DELETE FROM public.packing_records WHERE product_id = v_test_product_id;
+    DELETE FROM public.raw_material_receipts WHERE raw_material_id = v_test_raw_mat_id;
+    DELETE FROM public.products WHERE id = v_test_product_id;
+    DELETE FROM public.raw_materials WHERE id = v_test_raw_mat_id;
+
+    EXECUTE 'ALTER TABLE public.sale_items ENABLE TRIGGER trg_no_delete_sale_items';
+    EXECUTE 'ALTER TABLE public.sales ENABLE TRIGGER trg_no_delete_sales';
+    EXECUTE 'ALTER TABLE public.transfers ENABLE TRIGGER trg_no_delete_transfers';
+    EXECUTE 'ALTER TABLE public.packing_records ENABLE TRIGGER trg_no_delete_packing';
+    EXECUTE 'ALTER TABLE public.raw_material_receipts ENABLE TRIGGER trg_no_delete_raw_receipts';
 
     RAISE NOTICE '================================================================';
     RAISE NOTICE 'ALL DATABASE CONSTRAINT & TRIGGER VERIFICATION TESTS PASSED!';
