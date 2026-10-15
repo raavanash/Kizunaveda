@@ -49,7 +49,7 @@ void main() {
       );
       expect(createdSale2, isNotNull);
 
-      final saleRecorded = notifier.sales.last;
+      final saleRecorded = createdSale2!;
       expect(saleRecorded.quantity, 20);
       expect(saleRecorded.isCompleted, isTrue);
       expect(notifier.inventorySummaries.first.jaipurFinishedStock, stockBeforeSale - 20);
@@ -70,8 +70,8 @@ void main() {
 
     test('3. OWNER can transition COMPLETED -> VOIDED', () async {
       final summary = notifier.inventorySummaries.first;
-      await notifier.recordSale(productId: summary.product.id, quantity: 5);
-      final sale = notifier.sales.last;
+      final created = await notifier.recordSale(productId: summary.product.id, quantity: 5);
+      final sale = created!;
 
       expect(sale.isCompleted, isTrue);
       final voided = await repository.voidSale(saleId: sale.id);
@@ -80,8 +80,8 @@ void main() {
 
     test('4. VOIDED sale cannot be un-voided back to COMPLETED', () async {
       final summary = notifier.inventorySummaries.first;
-      await notifier.recordSale(productId: summary.product.id, quantity: 5);
-      final sale = notifier.sales.last;
+      final created = await notifier.recordSale(productId: summary.product.id, quantity: 5);
+      final sale = created!;
 
       await repository.voidSale(saleId: sale.id);
 
@@ -140,11 +140,11 @@ void main() {
       final soldInitial = summaryInitial.totalSold;
 
       // Record Sale 1: 15 units
-      await notifier.recordSale(
+      final sale1 = await notifier.recordSale(
         productId: summaryInitial.product.id,
         quantity: 15,
       );
-      final sale1 = notifier.sales.last;
+      expect(sale1, isNotNull);
 
       // Record Sale 2: 25 units
       await notifier.recordSale(
@@ -157,7 +157,7 @@ void main() {
       expect(summaryAfter2.jaipurFinishedStock, stockInitial - 40);
 
       // Void Sale 1 (15 units)
-      await notifier.voidSale(saleId: sale1.id);
+      await notifier.voidSale(saleId: sale1!.id);
 
       final summaryAfterVoid = notifier.inventorySummaries.first;
       expect(summaryAfterVoid.totalSold, soldInitial + 25);

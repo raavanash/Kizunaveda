@@ -578,7 +578,151 @@ BEGIN
         RAISE EXCEPTION 'TEST 5E FAILED: GST billing was not blocked when disabled!';
     END IF;
 
-    RAISE NOTICE 'TEST 5 PASSED: Server-side pricing & discount authorization boundaries and GST block verified.';
+    -- 5F: 0% discount on cashier sale -> SUCCEEDS
+    BEGIN
+        PERFORM public.fn_create_pos_sale(
+            p_customer_name => 'Zero Discount Buyer',
+            p_customer_phone => '9000000008',
+            p_payment_method => 'CASH',
+            p_items => jsonb_build_array(
+                jsonb_build_object('product_id', v_test_product_1, 'quantity', 1, 'unit_price', 200.00, 'discount', 0.00)
+            ),
+            p_location_id => v_jaipur_id,
+            p_client_request_id => gen_random_uuid()
+        );
+    EXCEPTION WHEN OTHERS THEN
+        RAISE EXCEPTION 'TEST 5F FAILED: Zero discount sale failed unexpectedly: %', SQLERRM;
+    END;
+
+    -- 5G: Multi-line bill by cashier where all lines are within 10% ceiling -> SUCCEEDS
+    BEGIN
+        PERFORM public.fn_create_pos_sale(
+            p_customer_name => 'Valid MultiLine Buyer',
+            p_customer_phone => '9000000009',
+            p_payment_method => 'CASH',
+            p_items => jsonb_build_array(
+                jsonb_build_object('product_id', v_test_product_1, 'quantity', 1, 'unit_price', 200.00, 'discount', 20.00),
+                jsonb_build_object('product_id', v_test_product_2, 'quantity', 1, 'unit_price', 150.00, 'discount', 7.50)
+            ),
+            p_location_id => v_jaipur_id,
+            p_client_request_id => gen_random_uuid()
+        );
+    EXCEPTION WHEN OTHERS THEN
+        RAISE EXCEPTION 'TEST 5G FAILED: Valid multi-line cashier discount sale failed unexpectedly: %', SQLERRM;
+    END;
+
+    -- 5H: Multi-line bill by cashier where line 1 is valid (10%) but line 2 exceeds 10% (15%) -> MUST REJECT
+    v_err_caught := FALSE;
+    BEGIN
+        PERFORM public.fn_create_pos_sale(
+            p_customer_name => 'Invalid MultiLine Buyer',
+            p_customer_phone => '9000000010',
+            p_payment_method => 'CASH',
+            p_items => jsonb_build_array(
+                jsonb_build_object('product_id', v_test_product_1, 'quantity', 1, 'unit_price', 200.00, 'discount', 20.00),
+                jsonb_build_object('product_id', v_test_product_2, 'quantity', 1, 'unit_price', 150.00, 'discount', 22.50)
+            ),
+            p_location_id => v_jaipur_id,
+            p_client_request_id => gen_random_uuid()
+        );
+    EXCEPTION WHEN OTHERS THEN
+        IF SQLERRM LIKE '%Unauthorized discount%' THEN
+            v_err_caught := TRUE;
+        END IF;
+    END;
+
+    IF NOT v_err_caught THEN
+        RAISE EXCEPTION 'TEST 5H FAILED: Multi-line bill with second line exceeding discount ceiling was not blocked!';
+    END IF;
+
+    -- 5I: Negative discount input -> MUST REJECT
+    v_err_caught := FALSE;
+    BEGIN
+        PERFORM public.fn_create_pos_sale(
+            p_customer_name => 'Negative Discount Buyer',
+            p_customer_phone => '9000000011',
+            p_payment_method => 'CASH',
+            p_items => jsonb_build_array(
+                jsonb_build_object('product_id', v_test_product_1, 'quantity', 1, 'unit_price', 200.00, 'discount', -10.00)
+            ),
+            p_location_id => v_jaipur_id,
+            p_client_request_id => gen_random_uuid()
+        );
+    EXCEPTION WHEN OTHERS THEN
+        IF SQLERRM LIKE '%Invalid line item discount%' OR SQLERRM LIKE '%must be%non-negative%' THEN
+            v_err_caught := TRUE;
+        END IF;
+    END;
+
+    IF NOT v_err_caught THEN
+        RAISE EXCEPTION 'TEST 5I FAILED: Negative discount was not rejected!';
+    END IF;
+
+    -- 5J: Discount exceeding total line amount -> MUST REJECT
+    v_err_caught := FALSE;
+    BEGIN
+        PERFORM public.fn_create_pos_sale(
+            p_customer_name => 'Exceeding Discount Buyer',
+            p_customer_phone => '9000000012',
+            p_payment_method => 'CASH',
+            p_items => jsonb_build_array(
+                jsonb_build_object('product_id', v_test_product_1, 'quantity', 1, 'unit_price', 200.00, 'discount', 250.00)
+            ),
+            p_location_id => v_jaipur_id,
+            p_client_request_id => gen_random_uuid()
+        );
+    EXCEPTION WHEN OTHERS THEN
+        IF SQLERRM LIKE '%Discount cannot exceed line item total%' OR SQLERRM LIKE '%Unauthorized discount%' THEN
+            v_err_caught := TRUE;
+        END IF;
+    END;
+
+    IF NOT v_err_caught THEN
+        RAISE EXCEPTION 'TEST 5J FAILED: Discount exceeding line total was not rejected!';
+    END IF;
+
+    -- 5K: Unauthorized role spoofing (e.g. role = "cashier" or "guest") -> MUST REJECT
+    PERFORM set_config('request.jwt.claims', '{"role": "authenticated", "app_metadata": {"role": "guest_cashier"}}', true);
+    v_err_caught := FALSE;
+    BEGIN
+        PERFORM public.fn_create_pos_sale(
+            p_customer_name => 'Spoofed Role Buyer',
+            p_customer_phone => '9000000013',
+            p_payment_method => 'CASH',
+            p_items => jsonb_build_array(
+                jsonb_build_object('product_id', v_test_product_1, 'quantity', 1, 'unit_price', 200.00, 'discount', 0.00)
+            ),
+            p_location_id => v_jaipur_id,
+            p_client_request_id => gen_random_uuid()
+        );
+    EXCEPTION WHEN OTHERS THEN
+        IF SQLERRM LIKE '%Unauthorized: Only OWNER, NEEMRANA, or JAIPUR roles can create POS sales%' THEN
+            v_err_caught := TRUE;
+        END IF;
+    END;
+
+    IF NOT v_err_caught THEN
+        RAISE EXCEPTION 'TEST 5K FAILED: Spoofed unauthorized role was able to create POS sale!';
+    END IF;
+
+    -- 5L: Owner role is NOT restricted by cashier 10% ceiling (25% discount allowed) -> SUCCEEDS
+    PERFORM set_config('request.jwt.claims', '{"role": "authenticated", "app_metadata": {"role": "owner"}}', true);
+    BEGIN
+        PERFORM public.fn_create_pos_sale(
+            p_customer_name => 'Owner High Discount Buyer',
+            p_customer_phone => '9000000014',
+            p_payment_method => 'CASH',
+            p_items => jsonb_build_array(
+                jsonb_build_object('product_id', v_test_product_1, 'quantity', 1, 'unit_price', 200.00, 'discount', 50.00)
+            ),
+            p_location_id => v_jaipur_id,
+            p_client_request_id => gen_random_uuid()
+        );
+    EXCEPTION WHEN OTHERS THEN
+        RAISE EXCEPTION 'TEST 5L FAILED: Owner 25%% discount rejected: %', SQLERRM;
+    END;
+
+    RAISE NOTICE 'TEST 5 PASSED: Server-side pricing & discount authorization boundaries, multi-line enforcement, negative input rejection, role spoofing defense, and Owner privileges verified.';
 
     -- --------------------------------------------------------------------------
     -- TEST 6: Insufficient Stock & Atomic Mid-Sale Rollback

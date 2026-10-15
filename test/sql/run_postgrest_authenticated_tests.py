@@ -266,23 +266,121 @@ def main():
 
     try:
         assert fixture_product_id is not None, "Failed to obtain or create an active product for discount testing."
-        status, err = make_request(
+
+        # Ensure Jaipur store has inventory to fulfill test sales
+        status_stock, res_stock = make_request(
+            f"{supabase_url}/rest/v1/rpc/fn_receive_store_stock",
+            method="POST",
+            headers={"Authorization": f"Bearer {jaipur_token}", "apikey": anon_key},
+            body={"p_location_id": jaipur_id, "p_product_id": fixture_product_id, "p_quantity": 50, "p_notes": "Stock for PostgREST discount tests"}
+        )
+        assert status_stock == 200, f"Failed to seed stock for discount testing: {res_stock}"
+
+        # 6A: 0% discount by cashier -> 200 OK
+        status_0, res_0 = make_request(
+            f"{supabase_url}/rest/v1/rpc/fn_create_pos_sale",
+            method="POST",
+            headers={"Authorization": f"Bearer {jaipur_token}", "apikey": anon_key},
+            body={
+                "p_customer_name": "Zero Discount Buyer",
+                "p_customer_phone": "9829000001",
+                "p_payment_method": "CASH",
+                "p_items": [{"product_id": fixture_product_id, "quantity": 1, "unit_price": 200.0, "discount": 0.0}],
+                "p_location_id": jaipur_id
+            }
+        )
+        print(f"    6A: 0% discount status: {status_0}")
+        assert status_0 == 200, f"Expected 200 for 0% discount, got {status_0}: {res_0}"
+        print("    [PASS] 6A: 0% cashier discount accepted.")
+
+        # 6B: Exactly 10.00% discount by cashier (₹20 on ₹200) -> 200 OK
+        status_10, res_10 = make_request(
+            f"{supabase_url}/rest/v1/rpc/fn_create_pos_sale",
+            method="POST",
+            headers={"Authorization": f"Bearer {jaipur_token}", "apikey": anon_key},
+            body={
+                "p_customer_name": "Ten Pct Buyer",
+                "p_customer_phone": "9829000002",
+                "p_payment_method": "CASH",
+                "p_items": [{"product_id": fixture_product_id, "quantity": 1, "unit_price": 200.0, "discount": 20.0}],
+                "p_location_id": jaipur_id
+            }
+        )
+        print(f"    6B: Exactly 10.00% discount status: {status_10}")
+        assert status_10 == 200, f"Expected 200 for exactly 10% discount, got {status_10}: {res_10}"
+        print("    [PASS] 6B: Exactly 10% cashier discount accepted at boundary.")
+
+        # 6C: Discount exceeding ceiling (₹25 on ₹200 = 12.5%) -> 400 REJECT
+        status_over, err_over = make_request(
             f"{supabase_url}/rest/v1/rpc/fn_create_pos_sale",
             method="POST",
             headers={"Authorization": f"Bearer {jaipur_token}", "apikey": anon_key},
             body={
                 "p_customer_name": "Over Discount Buyer",
-                "p_customer_phone": "9829000000",
+                "p_customer_phone": "9829000003",
                 "p_payment_method": "CASH",
                 "p_items": [{"product_id": fixture_product_id, "quantity": 1, "unit_price": 200.0, "discount": 25.0}],
                 "p_location_id": jaipur_id
             }
         )
-        print(f"    Over-discount sale status: {status}, response: {err}")
-        assert status in (400, 403), f"Expected 400/403, got {status}"
-        err_str = json.dumps(err)
-        assert "Unauthorized discount" in err_str or "violates pos discount limits" in err_str.lower(), f"Unexpected error: {err_str}"
-        print("    [PASS] Server rejected cashier discount exceeding ceiling.")
+        print(f"    6C: Over-discount sale status: {status_over}")
+        assert status_over in (400, 403), f"Expected 400/403 for over-discount, got {status_over}: {err_over}"
+        err_str = json.dumps(err_over)
+        assert "Unauthorized discount" in err_str, f"Unexpected error: {err_str}"
+        print("    [PASS] 6C: Server rejected cashier discount exceeding ceiling.")
+
+        # 6D: Negative discount (₹-10) -> 400 REJECT
+        status_neg, err_neg = make_request(
+            f"{supabase_url}/rest/v1/rpc/fn_create_pos_sale",
+            method="POST",
+            headers={"Authorization": f"Bearer {jaipur_token}", "apikey": anon_key},
+            body={
+                "p_customer_name": "Negative Discount Buyer",
+                "p_customer_phone": "9829000004",
+                "p_payment_method": "CASH",
+                "p_items": [{"product_id": fixture_product_id, "quantity": 1, "unit_price": 200.0, "discount": -10.0}],
+                "p_location_id": jaipur_id
+            }
+        )
+        print(f"    6D: Negative discount status: {status_neg}")
+        assert status_neg in (400, 403), f"Expected 400/403 for negative discount, got {status_neg}: {err_neg}"
+        print("    [PASS] 6D: Server rejected negative discount input.")
+
+        # 6E: Direct table INSERT bypass to /rest/v1/sales by cashier -> 403 RLS REJECT
+        status_direct, err_direct = make_request(
+            f"{supabase_url}/rest/v1/sales",
+            method="POST",
+            headers={"Authorization": f"Bearer {jaipur_token}", "apikey": anon_key},
+            body={
+                "location_id": jaipur_id,
+                "bill_number": "BILL-BYPASS-001",
+                "customer_name": "Bypass Attempt",
+                "customer_phone": "9829000005",
+                "payment_method": "CASH",
+                "total_amount": 100.0,
+                "status": "COMPLETED"
+            }
+        )
+        print(f"    6E: Direct sales INSERT status: {status_direct}")
+        assert status_direct in (400, 403), f"Expected 400/403 for direct sales INSERT by cashier, got {status_direct}"
+        print("    [PASS] 6E: Direct table INSERT bypass blocked by RLS.")
+
+        # 6F: Owner role applying > 10% discount (e.g. ₹50 on ₹200 = 25%) -> 200 OK
+        status_owner, res_owner = make_request(
+            f"{supabase_url}/rest/v1/rpc/fn_create_pos_sale",
+            method="POST",
+            headers={"Authorization": f"Bearer {owner_token}", "apikey": anon_key},
+            body={
+                "p_customer_name": "Owner High Discount Buyer",
+                "p_customer_phone": "9829000006",
+                "p_payment_method": "CASH",
+                "p_items": [{"product_id": fixture_product_id, "quantity": 1, "unit_price": 200.0, "discount": 50.0}],
+                "p_location_id": jaipur_id
+            }
+        )
+        print(f"    6F: Owner 25% discount status: {status_owner}")
+        assert status_owner == 200, f"Expected 200 for Owner high discount, got {status_owner}: {res_owner}"
+        print("    [PASS] 6F: Owner role authorized for custom discount (>10%).")
     finally:
         if created_fixture and fixture_product_id:
             make_request(
@@ -291,6 +389,97 @@ def main():
                 headers={"Authorization": f"Bearer {owner_token}", "apikey": anon_key}
             )
             print("    [*] Cleaned up temporary test product fixture.")
+
+    # 7. RLS on /rest/v1/transfers
+    print("\n[*] 7. Testing RLS on /rest/v1/transfers...")
+    status, data = make_request(
+        f"{supabase_url}/rest/v1/transfers?select=*",
+        headers={"Authorization": f"Bearer {neemrana_token}", "apikey": anon_key}
+    )
+    print(f"    Neemrana cashier GET transfers: status={status}, rows={len(data) if isinstance(data, list) else data}")
+    assert status == 200 and isinstance(data, list) and len(data) == 0, f"Cashier RLS breach on transfers! rows={data}"
+
+    status_j, data_j = make_request(
+        f"{supabase_url}/rest/v1/transfers?select=*",
+        headers={"Authorization": f"Bearer {jaipur_token}", "apikey": anon_key}
+    )
+    assert status_j == 200 and isinstance(data_j, list) and len(data_j) == 0, f"Jaipur cashier RLS breach on transfers! rows={data_j}"
+    print("    [PASS] Cashier RLS verified: 0 transfer rows returned to cashier roles.")
+
+    status_owner, data_owner = make_request(
+        f"{supabase_url}/rest/v1/transfers?select=*",
+        headers={"Authorization": f"Bearer {owner_token}", "apikey": anon_key}
+    )
+    assert status_owner == 200 and isinstance(data_owner, list), f"Owner unable to read transfers! status={status_owner}"
+    print(f"    [PASS] Owner RLS verified: Owner can read historical transfers (rows={len(data_owner)}).")
+
+    # 8. Table grant denial on /rest/v1/transfers mutations
+    print("\n[*] 8. Testing table grant denial on /rest/v1/transfers mutations...")
+    status_post, err_post = make_request(
+        f"{supabase_url}/rest/v1/transfers",
+        method="POST",
+        headers={"Authorization": f"Bearer {owner_token}", "apikey": anon_key},
+        body={"product_id": "00000000-0000-0000-0000-000000000000", "from_location_id": neemrana_id, "to_location_id": jaipur_id, "dispatched_quantity": 5}
+    )
+    print(f"    Owner POST status: {status_post}, response: {err_post}")
+    assert status_post == 403 and "permission denied for table transfers" in json.dumps(err_post), f"Unexpected POST response: {err_post}"
+
+    status_patch, err_patch = make_request(
+        f"{supabase_url}/rest/v1/transfers?id=eq.00000000-0000-0000-0000-000000000000",
+        method="PATCH",
+        headers={"Authorization": f"Bearer {owner_token}", "apikey": anon_key},
+        body={"received_quantity": 5}
+    )
+    assert status_patch == 403 and "permission denied for table transfers" in json.dumps(err_patch), f"Unexpected PATCH response: {err_patch}"
+
+    status_del, err_del = make_request(
+        f"{supabase_url}/rest/v1/transfers?id=eq.00000000-0000-0000-0000-000000000000",
+        method="DELETE",
+        headers={"Authorization": f"Bearer {owner_token}", "apikey": anon_key}
+    )
+    assert status_del == 403 and "permission denied for table transfers" in json.dumps(err_del), f"Unexpected DELETE response: {err_del}"
+    print("    [PASS] Table grants verified: INSERT, UPDATE, and DELETE strictly denied (HTTP 403 / 42501).")
+
+    # 9. Fail-closed RPC fn_confirm_jaipur_receipt
+    print("\n[*] 9. Testing fail-closed RPC fn_confirm_jaipur_receipt...")
+    status_rpc, err_rpc = make_request(
+        f"{supabase_url}/rest/v1/rpc/fn_confirm_jaipur_receipt",
+        method="POST",
+        headers={"Authorization": f"Bearer {jaipur_token}", "apikey": anon_key},
+        body={"p_transfer_id": "00000000-0000-0000-0000-000000000000", "p_received_quantity": 5}
+    )
+    print(f"    fn_confirm_jaipur_receipt status: {status_rpc}, response: {err_rpc}")
+    assert status_rpc in (400, 403), f"Expected 400/403, got {status_rpc}"
+    err_rpc_str = json.dumps(err_rpc)
+    assert "permission denied for function fn_confirm_jaipur_receipt" in err_rpc_str or "Inter-store stock transfers are permanently disabled" in err_rpc_str, f"Unexpected error: {err_rpc_str}"
+    print("    [PASS] fn_confirm_jaipur_receipt verified fail-closed (execute revoked).")
+
+    # 10. Cross-outlet Jaipur cashier spoofing restrictions
+    print("\n[*] 10. Testing cross-outlet Jaipur cashier restrictions...")
+    status_rcv, err_rcv = make_request(
+        f"{supabase_url}/rest/v1/rpc/fn_receive_store_stock",
+        method="POST",
+        headers={"Authorization": f"Bearer {jaipur_token}", "apikey": anon_key},
+        body={"p_location_id": neemrana_id, "p_product_id": "00000000-0000-0000-0000-000000000000", "p_quantity": 10, "p_notes": "Cross-outlet test"}
+    )
+    assert status_rcv in (400, 403), f"Expected 400/403, got {status_rcv}"
+    assert "Jaipur operators can only receive stock for Jaipur store." in json.dumps(err_rcv), f"Unexpected error: {err_rcv}"
+
+    status_sale, err_sale = make_request(
+        f"{supabase_url}/rest/v1/rpc/fn_create_pos_sale",
+        method="POST",
+        headers={"Authorization": f"Bearer {jaipur_token}", "apikey": anon_key},
+        body={
+            "p_customer_name": "Cross Outlet Buyer",
+            "p_customer_phone": "9829000000",
+            "p_payment_method": "CASH",
+            "p_items": [{"product_id": "00000000-0000-0000-0000-000000000000", "quantity": 1, "unit_price": 200.0, "discount": 0.0}],
+            "p_location_id": neemrana_id
+        }
+    )
+    assert status_sale in (400, 403), f"Expected 400/403, got {status_sale}"
+    assert "Jaipur operators can only create sales for Jaipur store." in json.dumps(err_sale), f"Unexpected error: {err_sale}"
+    print("    [PASS] Jaipur cashier cross-outlet spoofing restrictions verified.")
 
     print("\n==================================================================")
     print("ALL POSTGREST AUTHENTICATED TESTS PASSED SUCCESSFULLY!")

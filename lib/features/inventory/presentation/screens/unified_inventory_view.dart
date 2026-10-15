@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../../../app/providers/inventory_provider.dart';
+import '../../../../app/routes/app_routes.dart';
 import '../../../../app/theme/app_colors.dart';
 import '../../../../core/constants/app_constants.dart';
 import '../../../../core/widgets/kizuna_card.dart';
@@ -63,6 +64,13 @@ class _UnifiedInventoryViewState extends State<UnifiedInventoryView> {
             tooltip: 'Refresh Inventory',
             onPressed: () => notifier?.loadInventoryData(),
           ),
+          if (widget.role == UserRole.owner)
+            IconButton(
+              key: const Key('unified_inventory_product_master_button'),
+              icon: const Icon(Icons.category_rounded),
+              tooltip: 'Product Master Catalog',
+              onPressed: () => AppRoutes.navigateToProductMaster(context),
+            ),
           IconButton(
             icon: const Icon(Icons.tune_rounded),
             tooltip: 'Stock Entry / Adjust',
@@ -261,7 +269,9 @@ class _UnifiedInventoryViewState extends State<UnifiedInventoryView> {
                                         ),
                                         const SizedBox(height: 2),
                                         Text(
-                                          'Price: ₹${s.product.standardSellingPrice.toStringAsFixed(2)} | Cost: ₹${s.product.purchaseCost.toStringAsFixed(2)}',
+                                          widget.role == UserRole.owner && s.product.purchaseCost > 0
+                                              ? 'Price: ₹${s.product.standardSellingPrice.toStringAsFixed(2)} | Cost: ₹${s.product.purchaseCost.toStringAsFixed(2)}'
+                                              : 'Price: ₹${s.product.standardSellingPrice.toStringAsFixed(2)}',
                                           style: TextStyle(
                                             fontSize: 11,
                                             fontWeight: FontWeight.w600,

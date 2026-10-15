@@ -31,18 +31,22 @@ class ProductInventorySummary {
   /// Total units sold across all stores
   int get totalSold => totalNeemranaSold + totalJaipurSold;
 
-  /// Neemrana finished stock: canonical physical stock if available, else legacy formula
+  /// Neemrana finished stock: canonical physical store inventory if available,
+  /// else local Neemrana fallback calculation (totalPacked + totalStockIn - totalSold).
+  /// Strictly isolated: never deducted by transfers to other stores.
   int get neemranaFinishedStock =>
       neemranaPhysicalStock ??
-      (totalPacked + totalNeemranaStockIn - totalDispatched - totalNeemranaSold);
+      (totalPacked + totalNeemranaStockIn - totalNeemranaSold);
 
   /// Alias for backward compatibility
   int get neemranaRemaining => neemranaFinishedStock;
 
-  /// Jaipur finished stock: canonical physical stock if available, else legacy formula
+  /// Jaipur finished stock: canonical physical store inventory if available,
+  /// else local Jaipur fallback calculation (totalStockIn - totalSold).
+  /// Strictly isolated: never derived from or dependent on Neemrana dispatches.
   int get jaipurFinishedStock =>
       jaipurPhysicalStock ??
-      (totalReceived + totalJaipurStockIn - totalJaipurSold);
+      (totalJaipurStockIn - totalJaipurSold);
 
   /// Alias for backward compatibility
   int get jaipurStock => jaipurFinishedStock;
@@ -50,6 +54,6 @@ class ProductInventorySummary {
   /// Combined total stock across both store locations: dynamically calculated
   int get combinedTotalStock => neemranaFinishedStock + jaipurFinishedStock;
 
-  /// Transfer discrepancy = Dispatched quantity MINUS Received quantity
-  int get transferDiscrepancy => totalDispatched - totalReceived;
+  /// Transfer discrepancy: permanently 0 as inter-store transfers are disabled
+  int get transferDiscrepancy => 0;
 }

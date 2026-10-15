@@ -45,14 +45,14 @@ class _StockInDialogState extends State<StockInDialog> {
 
   Product? _selectedProduct;
   late String _selectedLocationId;
-  String _selectedReason = 'PHYSICAL_AUDIT';
-  bool _isDirectCountMode = true; // true = enter actual count, false = add/deduct
+  String _selectedReason = 'RESTOCK';
+  bool _isDirectCountMode = false; // false = Receive Stock (+), true = Physical Shelf Audit (Overwrite)
   bool _isSubmitting = false;
 
   final Map<String, String> _reasons = {
-    'PHYSICAL_AUDIT': 'Physical Audit / Shelf Count',
+    'RESTOCK': 'Direct Store Restock / Shipment Receipt',
+    'PHYSICAL_AUDIT': 'Physical Audit / Shelf Count Correction',
     'OPENING_STOCK': 'Initial Physical Stock Entry',
-    'RESTOCK': 'Direct Store Restock',
     'CORRECTION': 'Inventory Correction',
     'DAMAGE_EXPIRY': 'Damaged / Expired Stock',
   };
@@ -116,6 +116,17 @@ class _StockInDialogState extends State<StockInDialog> {
       return;
     }
 
+    final inputVal = int.tryParse(_quantityController.text.trim());
+    if (inputVal == null || (!_isDirectCountMode && inputVal <= 0)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please enter a valid positive quantity.'),
+          backgroundColor: AppColors.error,
+        ),
+      );
+      return;
+    }
+
     final newQuantity = _calculateNewQuantity();
     if (newQuantity == null || newQuantity < 0) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -130,28 +141,43 @@ class _StockInDialogState extends State<StockInDialog> {
     setState(() => _isSubmitting = true);
 
     final inventoryNotifier = InventoryProvider.of(context);
-    final success = await inventoryNotifier.adjustStoreStock(
-      locationId: _selectedLocationId,
-      productId: _selectedProduct!.id,
-      newQuantity: newQuantity,
-      reason: _selectedReason,
-      notes: _notesController.text.trim().isNotEmpty
-          ? _notesController.text.trim()
-          : null,
-    );
+    final storeName = _selectedLocationId == LocationConstants.neemranaId
+        ? 'Neemrana'
+        : 'Jaipur';
+    final notes = _notesController.text.trim().isNotEmpty
+        ? _notesController.text.trim()
+        : null;
+
+    final bool success;
+    if (!_isDirectCountMode) {
+      // Safe additive stock receipt
+      success = await inventoryNotifier.receiveStoreStock(
+        locationId: _selectedLocationId,
+        productId: _selectedProduct!.id,
+        quantity: inputVal,
+        notes: notes,
+      );
+    } else {
+      // Physical shelf count adjustment (absolute overwrite)
+      success = await inventoryNotifier.adjustStoreStock(
+        locationId: _selectedLocationId,
+        productId: _selectedProduct!.id,
+        newQuantity: newQuantity,
+        reason: _selectedReason,
+        notes: notes,
+      );
+    }
 
     if (!mounted) return;
     setState(() => _isSubmitting = false);
 
     if (success) {
-      final storeName = _selectedLocationId == LocationConstants.neemranaId
-          ? 'Neemrana'
-          : 'Jaipur';
+      final message = !_isDirectCountMode
+          ? 'Stock received: +$inputVal packets of ${_selectedProduct!.name} added at $storeName.'
+          : 'Stock updated: ${_selectedProduct!.name} set to $newQuantity packets at $storeName.';
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(
-            'Stock updated: ${_selectedProduct!.name} set to $newQuantity packets at $storeName.',
-          ),
+          content: Text(message),
           backgroundColor: AppColors.success,
         ),
       );
@@ -274,6 +300,7 @@ class _StockInDialogState extends State<StockInDialog> {
               ),
               const SizedBox(height: 6),
               DropdownButtonFormField<Product>(
+                key: const Key('stock_in_product_dropdown'),
                 initialValue: _selectedProduct,
                 isExpanded: true,
                 hint: const Text('Choose product...'),
@@ -282,7 +309,7 @@ class _StockInDialogState extends State<StockInDialog> {
                   border: OutlineInputBorder(),
                   contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
                 ),
-                items: products.map((product) {
+                items: products.where((product) => product.active).map((product) {
                   return DropdownMenuItem<Product>(
                     value: product,
                     child: Text(
@@ -339,20 +366,22 @@ class _StockInDialogState extends State<StockInDialog> {
                 children: [
                   Expanded(
                     child: ChoiceChip(
-                      label: const Text('Actual Count'),
-                      selected: _isDirectCountMode,
+                      avatar: const Icon(Icons.add_box_rounded, size: 16),
+                      label: const Text('Receive Stock (+)'),
+                      selected: !_isDirectCountMode,
                       onSelected: (selected) {
-                        if (selected) setState(() => _isDirectCountMode = true);
+                        if (selected) setState(() => _isDirectCountMode = false);
                       },
                     ),
                   ),
                   const SizedBox(width: 8),
                   Expanded(
                     child: ChoiceChip(
-                      label: const Text('Relative (+/-)'),
-                      selected: !_isDirectCountMode,
+                      avatar: const Icon(Icons.fact_check_rounded, size: 16),
+                      label: const Text('Physical Audit'),
+                      selected: _isDirectCountMode,
                       onSelected: (selected) {
-                        if (selected) setState(() => _isDirectCountMode = false);
+                        if (selected) setState(() => _isDirectCountMode = true);
                       },
                     ),
                   ),
@@ -362,16 +391,21 @@ class _StockInDialogState extends State<StockInDialog> {
 
               // Quantity Input Field
               Text(
-                _isDirectCountMode ? 'Actual Physical Count *' : 'Quantity Change (+/-) *',
+                !_isDirectCountMode
+                    ? 'Received Quantity to Add (+) *'
+                    : 'Actual Physical Shelf Count (Overwrite) *',
                 style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
               ),
               const SizedBox(height: 6),
               TextFormField(
+                key: const Key('stock_in_quantity_field'),
                 controller: _quantityController,
-                keyboardType: const TextInputType.numberWithOptions(signed: true),
+                keyboardType: TextInputType.number,
                 decoration: InputDecoration(
-                  prefixIcon: const Icon(Icons.edit_note_rounded),
-                  hintText: _isDirectCountMode ? 'e.g. 50' : 'e.g. 20 or -5',
+                  prefixIcon: Icon(!_isDirectCountMode
+                      ? Icons.add_circle_outline_rounded
+                      : Icons.edit_note_rounded),
+                  hintText: !_isDirectCountMode ? 'e.g. 20' : 'e.g. 50',
                   border: const OutlineInputBorder(),
                   contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
                 ),
@@ -380,9 +414,11 @@ class _StockInDialogState extends State<StockInDialog> {
                   if (val == null || val.trim().isEmpty) return 'Enter quantity';
                   final numVal = int.tryParse(val.trim());
                   if (numVal == null) return 'Enter a valid number';
-                  if (_isDirectCountMode && numVal < 0) return 'Count cannot be negative';
-                  if (!_isDirectCountMode && (currentStock + numVal) < 0) {
-                    return 'Cannot deduct below zero stock';
+                  if (!_isDirectCountMode && numVal <= 0) {
+                    return 'Received quantity must be greater than zero';
+                  }
+                  if (_isDirectCountMode && numVal < 0) {
+                    return 'Shelf count cannot be negative';
                   }
                   return null;
                 },
@@ -476,6 +512,7 @@ class _StockInDialogState extends State<StockInDialog> {
           child: const Text('Cancel'),
         ),
         ElevatedButton(
+          key: const Key('stock_in_submit_button'),
           style: ElevatedButton.styleFrom(
             backgroundColor: primaryColor,
             foregroundColor: Colors.white,

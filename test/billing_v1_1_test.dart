@@ -197,8 +197,8 @@ void main() {
       expect(result.message, contains('WhatsApp opened for +91 98765 43210'));
       expect(launchedUrl, startsWith('whatsapp://send?phone=919876543210'));
       expect(launchedUrl, contains('BILL-010001'));
-      expect(sharedFiles, isNotNull);
-      expect(sharedFiles!.first, contains('KizunaVeda_BILL-010001.pdf'));
+      // Direct launch avoids duplicate share popup
+      expect(sharedFiles, isNull);
     });
 
     test('sendBillOnWhatsApp falls back to share sheet when WhatsApp is unavailable', () async {

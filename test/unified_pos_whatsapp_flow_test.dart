@@ -1,3 +1,4 @@
+import 'package:kizuna_veda/features/sales/domain/entities/cart_item.dart';
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
@@ -16,8 +17,10 @@ class DelayedInventoryRepository extends UnconnectedInventoryRepository {
 
   @override
   Future<Sale> recordSale({
-    required String productId,
-    required int quantity,
+    String? productId,
+    int? quantity,
+    List<CartItem>? items,
+    String? clientRequestId,
     String? customerName,
     String? customerPhone,
     String paymentMethod = 'CASH',
@@ -32,10 +35,13 @@ class DelayedInventoryRepository extends UnconnectedInventoryRepository {
     double? unitPrice,
     double discount = 0.0,
     DateTime? soldAt,
+    String? callerRole,
   }) async {
     final sale = await super.recordSale(
       productId: productId,
       quantity: quantity,
+      items: items,
+      clientRequestId: clientRequestId,
       customerName: customerName,
       customerPhone: customerPhone,
       paymentMethod: paymentMethod,
@@ -50,6 +56,7 @@ class DelayedInventoryRepository extends UnconnectedInventoryRepository {
       unitPrice: unitPrice,
       discount: discount,
       soldAt: soldAt,
+      callerRole: callerRole,
     );
 
     if (inFlightCompleter != null) {
@@ -154,7 +161,7 @@ void main() {
 
       // 1. Verify sale persisted exactly once
       expect(notifier.sales.length, initialSalesCount + 1);
-      final createdSale = notifier.sales.last;
+      final createdSale = notifier.sales.first;
       expect(createdSale.customerName, 'Ramesh Kumar');
       expect(createdSale.customerPhone, '9876543210');
       expect(createdSale.quantity, 3);
@@ -307,7 +314,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(notifier.sales.length, initialSalesCount + 1);
-      final committedSaleId = notifier.sales.last.id;
+      final committedSaleId = notifier.sales.first.id;
       expect(
           notifier.inventorySummaries.first.jaipurFinishedStock, initialStock - 4);
       expect(find.text('WhatsApp Handoff Notice'), findsOneWidget);
@@ -323,7 +330,7 @@ void main() {
 
       // 1. NO new sale created (count remains initial + 1)
       expect(notifier.sales.length, initialSalesCount + 1);
-      expect(notifier.sales.last.id, committedSaleId);
+      expect(notifier.sales.first.id, committedSaleId);
 
       // 2. NO additional stock deducted (remains initialStock - 4)
       expect(

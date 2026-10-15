@@ -169,8 +169,9 @@ class _VyaparDashboardViewState extends State<VyaparDashboardView> {
             _buildInventoryStockCards(metrics, primaryColor),
             const SizedBox(height: 12),
 
-            // Financial Performance & Gross Profit Card
-            if (metrics.completedBillsCount > 0) ...[
+            // Financial Performance & Gross Profit Card (Owner Only)
+            if (widget.role == UserRole.owner &&
+                metrics.completedBillsCount > 0) ...[
               _buildProfitCard(metrics),
               const SizedBox(height: 12),
             ],

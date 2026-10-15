@@ -1,3 +1,4 @@
+import 'package:kizuna_veda/features/sales/domain/entities/cart_item.dart';
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
@@ -16,8 +17,10 @@ class Step2TestInventoryRepo extends UnconnectedInventoryRepository {
 
   @override
   Future<Sale> recordSale({
-    required String productId,
-    required int quantity,
+    String? productId,
+    int? quantity,
+    List<CartItem>? items,
+    String? clientRequestId,
     String? customerName,
     String? customerPhone,
     String paymentMethod = 'CASH',
@@ -32,11 +35,14 @@ class Step2TestInventoryRepo extends UnconnectedInventoryRepository {
     double? unitPrice,
     double discount = 0.0,
     DateTime? soldAt,
+    String? callerRole,
   }) async {
     recordSaleCallCount++;
     final sale = await super.recordSale(
       productId: productId,
       quantity: quantity,
+      items: items,
+      clientRequestId: clientRequestId,
       customerName: customerName,
       customerPhone: customerPhone,
       paymentMethod: paymentMethod,
@@ -51,6 +57,7 @@ class Step2TestInventoryRepo extends UnconnectedInventoryRepository {
       unitPrice: unitPrice,
       discount: discount,
       soldAt: soldAt,
+      callerRole: callerRole,
     );
 
     if (inFlightCompleter != null) {

@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
+import '../../core/constants/app_constants.dart';
 import '../../features/jaipur/presentation/screens/ebill_history_screen.dart';
 import '../../features/owner/presentation/screens/in_transit_stock_screen.dart';
 import '../../features/owner/presentation/screens/jaipur_stock_screen.dart';
 import '../../features/owner/presentation/screens/neemrana_stock_screen.dart';
+import '../../features/owner/presentation/screens/product_master_screen.dart';
 import '../../features/owner/presentation/screens/user_management_screen.dart';
 
 /// Centralized Application Routes and Typed Navigation Helpers.
@@ -11,6 +13,7 @@ abstract class AppRoutes {
   static const String ownerJaipurStock = '/owner/jaipur-stock';
   static const String ownerInTransitStock = '/owner/in-transit-stock';
   static const String ownerUserManagement = '/owner/user-management';
+  static const String ownerProductMaster = '/owner/product-master';
   static const String ebillHistory = '/ebill-history';
 
   static Map<String, WidgetBuilder> get routes => {
@@ -18,6 +21,7 @@ abstract class AppRoutes {
         ownerJaipurStock: (context) => const JaipurStockScreen(),
         ownerInTransitStock: (context) => const InTransitStockScreen(),
         ownerUserManagement: (context) => const UserManagementScreen(),
+        ownerProductMaster: (context) => const ProductMasterScreen(role: UserRole.owner),
         ebillHistory: (context) => const EBillHistoryScreen(),
       };
 
@@ -53,6 +57,15 @@ abstract class AppRoutes {
       MaterialPageRoute(
         builder: (_) => const UserManagementScreen(),
         settings: const RouteSettings(name: ownerUserManagement),
+      ),
+    );
+  }
+
+  static Future<void> navigateToProductMaster(BuildContext context) {
+    return Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => const ProductMasterScreen(role: UserRole.owner),
+        settings: const RouteSettings(name: ownerProductMaster),
       ),
     );
   }

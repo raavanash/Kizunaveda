@@ -8,6 +8,8 @@ import '../../../inventory/domain/entities/product.dart';
 import '../../../inventory/domain/entities/sale.dart';
 import '../../../inventory/presentation/controllers/inventory_notifier.dart';
 import '../../../jaipur/presentation/screens/invoice_preview_screen.dart';
+import '../../../../core/utils/id_generator.dart';
+import '../../domain/entities/cart_item.dart';
 
 /// Single, Guided New Sale Workflow inspired by Vyapar:
 /// Multi-step staged workflow with visible step progress:
@@ -59,6 +61,9 @@ class _GuidedNewSaleScreenState extends State<GuidedNewSaleScreen> {
   String _paymentMethod = 'CASH';
   bool _hasUserEditedPrice = false;
 
+  final List<CartItem> _additionalCartItems = [];
+  String? _clientRequestId;
+
   bool _isSubmitting = false;
   String? _errorMessage;
   Sale? _completedSale;
@@ -78,8 +83,10 @@ class _GuidedNewSaleScreenState extends State<GuidedNewSaleScreen> {
   void didChangeDependencies() {
     super.didChangeDependencies();
     final notifier = InventoryProvider.maybeOf(context);
-    if (_selectedProduct == null && (notifier?.products.isNotEmpty ?? false)) {
-      _selectedProduct = notifier!.products.first;
+    final activeProducts =
+        notifier?.products.where((p) => p.active).toList() ?? [];
+    if (_selectedProduct == null && activeProducts.isNotEmpty) {
+      _selectedProduct = activeProducts.first;
       if (!_hasUserEditedPrice && _priceCtrl.text.isEmpty) {
         _priceCtrl.text =
             _selectedProduct!.standardSellingPrice.toStringAsFixed(2);
@@ -120,10 +127,36 @@ class _GuidedNewSaleScreenState extends State<GuidedNewSaleScreen> {
     return 0.0;
   }
 
-  double get _totalAmount {
+  double get _currentLineTotal {
     final gross = _quantity * _unitPrice;
     final total = gross - _discount;
     return total > 0 ? total : 0.0;
+  }
+
+  double get _totalAmount {
+    if (_additionalCartItems.isNotEmpty) {
+      final total = _additionalCartItems.fold<double>(
+          0.0, (acc, item) => acc + item.lineTotal);
+      return total > 0 ? total : 0.0;
+    }
+    return _currentLineTotal;
+  }
+
+  List<CartItem> get _allCartItems {
+    if (_additionalCartItems.isNotEmpty) {
+      return List<CartItem>.unmodifiable(_additionalCartItems);
+    }
+    if (_selectedProduct != null && _quantity > 0) {
+      return [
+        CartItem(
+          product: _selectedProduct!,
+          quantity: _quantity,
+          unitPrice: _unitPrice,
+          discount: _discount,
+        ),
+      ];
+    }
+    return const [];
   }
 
   bool get _isPriceOverridden {
@@ -143,45 +176,243 @@ class _GuidedNewSaleScreenState extends State<GuidedNewSaleScreen> {
         : summary.jaipurFinishedStock;
   }
 
+  void _addCurrentProductToCart() {
+    if (_selectedProduct == null) return;
+    if (!_step1FormKey.currentState!.validate()) return;
+    if (_quantity <= 0) {
+      setState(() => _errorMessage = 'Quantity must be greater than zero.');
+      return;
+    }
+    if (!_unitPrice.isFinite || _unitPrice.isNaN || _unitPrice <= 0) {
+      setState(() =>
+          _errorMessage = 'Selling price must be greater than zero (₹ > 0).');
+      return;
+    }
+    if (!_discount.isFinite || _discount.isNaN || _discount < 0) {
+      setState(() => _errorMessage = 'Discount cannot be negative.');
+      return;
+    }
+    if (_discount > (_quantity * _unitPrice)) {
+      setState(() => _errorMessage =
+          'Discount cannot exceed subtotal (₹${(_quantity * _unitPrice).toStringAsFixed(2)}).');
+      return;
+    }
+
+    // Cashier Authorization Guard
+    if (widget.role != UserRole.owner) {
+      if (_isPriceOverridden) {
+        setState(() => _errorMessage =
+            'Unauthorized price change: Cashiers cannot modify catalog price (₹${_selectedProduct!.standardSellingPrice.toStringAsFixed(2)}). Owner authorization required.');
+        return;
+      }
+      final gross = _quantity * _unitPrice;
+      if (_discount > 0 && gross > 0) {
+        final pct = (_discount / gross) * 100.0;
+        if (double.parse(pct.toStringAsFixed(4)) > 10.00) {
+          setState(() => _errorMessage =
+              'Unauthorized discount: Cashier discount exceeds allowed maximum of 10%. Owner authorization required.');
+          return;
+        }
+      }
+    }
+
+    final notifier = InventoryProvider.maybeOf(context);
+    final available = notifier != null ? _getAvailableStock(notifier) : 0;
+    final existingIndex = _additionalCartItems
+        .indexWhere((item) => item.product.id == _selectedProduct!.id);
+    final currentQtyInCart = existingIndex != -1
+        ? _additionalCartItems[existingIndex].quantity
+        : 0;
+
+    if (notifier != null && (currentQtyInCart + _quantity) > available) {
+      setState(() => _errorMessage =
+          'Cannot add $_quantity pkts of ${_selectedProduct!.name}. '
+          '${currentQtyInCart > 0 ? "Cart already has $currentQtyInCart pkts. " : ""}'
+          'Only $available pkts available in stock.');
+      return;
+    }
+
+    if (existingIndex != -1 && widget.role != UserRole.owner) {
+      final existingItem = _additionalCartItems[existingIndex];
+      final combinedQty = existingItem.quantity + _quantity;
+      final combinedDiscount = existingItem.discount + _discount;
+      final combinedGross = combinedQty * _unitPrice;
+      if (combinedGross > 0 && combinedDiscount > 0) {
+        final pct = (combinedDiscount / combinedGross) * 100.0;
+        if (double.parse(pct.toStringAsFixed(4)) > 10.00) {
+          setState(() => _errorMessage =
+              'Unauthorized discount: Combined cashier discount exceeds allowed maximum of 10%. Owner authorization required.');
+          return;
+        }
+      }
+    }
+
+    setState(() {
+      if (existingIndex != -1) {
+        final existingItem = _additionalCartItems[existingIndex];
+        _additionalCartItems[existingIndex] = CartItem(
+          product: _selectedProduct!,
+          quantity: existingItem.quantity + _quantity,
+          unitPrice: _unitPrice,
+          discount: existingItem.discount + _discount,
+        );
+      } else {
+        _additionalCartItems.add(CartItem(
+          product: _selectedProduct!,
+          quantity: _quantity,
+          unitPrice: _unitPrice,
+          discount: _discount,
+        ));
+      }
+
+      // Advance product dropdown to next remaining product if any
+      final products =
+          notifier?.products.where((p) => p.active).toList() ?? [];
+      final remaining = products
+          .where((p) =>
+              !_additionalCartItems.any((item) => item.product.id == p.id))
+          .toList();
+      final remainingWithStock = remaining.where((p) {
+        final summary = notifier?.inventorySummaries
+            .where((s) => s.product.id == p.id)
+            .firstOrNull;
+        final available = summary == null
+            ? 0
+            : (_selectedLocationId == LocationConstants.neemranaId
+                ? summary.neemranaFinishedStock
+                : summary.jaipurFinishedStock);
+        return available > 0;
+      }).toList();
+      if (remainingWithStock.isNotEmpty) {
+        _selectedProduct = remainingWithStock.first;
+      } else if (remaining.isNotEmpty) {
+        _selectedProduct = remaining.first;
+      }
+      _qtyCtrl.text = '1';
+      if (_selectedProduct != null) {
+        _priceCtrl.text =
+            _selectedProduct!.standardSellingPrice.toStringAsFixed(2);
+      }
+      _discountCtrl.text = '0';
+      _hasUserEditedPrice = false;
+      _errorMessage = null;
+    });
+  }
+
+  void _removeCartItem(int index) {
+    setState(() {
+      _additionalCartItems.removeAt(index);
+      _errorMessage = null;
+    });
+  }
+
   void _nextStep() {
     FocusScope.of(context).unfocus();
     setState(() => _errorMessage = null);
     if (_currentStep == 0) {
       final notifier = InventoryProvider.maybeOf(context);
-      if (_selectedProduct == null) {
-        setState(() => _errorMessage = 'Please select a product.');
-        return;
-      }
-      if (!_step1FormKey.currentState!.validate()) {
-        setState(() => _errorMessage =
-            'Please enter a valid quantity, selling price, and discount.');
-        return;
-      }
-      if (_quantity <= 0) {
-        setState(() =>
-            _errorMessage = 'Quantity must be greater than zero.');
-        return;
-      }
-      if (_unitPrice <= 0) {
-        setState(() =>
-            _errorMessage = 'Selling price must be greater than zero (₹ > 0).');
-        return;
-      }
-      if (_discount < 0) {
-        setState(() => _errorMessage = 'Discount cannot be negative.');
-        return;
-      }
-      if (_discount > (_quantity * _unitPrice)) {
-        setState(() => _errorMessage =
-            'Discount cannot exceed subtotal (₹${(_quantity * _unitPrice).toStringAsFixed(2)}).');
-        return;
-      }
-      if (notifier != null) {
-        final available = _getAvailableStock(notifier);
-        if (_quantity > available) {
-          setState(() => _errorMessage =
-              'Cannot sell $_quantity pkts. Only $available pkts available in stock.');
+      if (_additionalCartItems.isEmpty) {
+        if (_selectedProduct == null) {
+          setState(() => _errorMessage = 'Please select a product.');
           return;
+        }
+        if (!_step1FormKey.currentState!.validate()) {
+          setState(() => _errorMessage =
+              'Please enter a valid quantity, selling price, and discount.');
+          return;
+        }
+        if (_quantity <= 0) {
+          setState(() =>
+              _errorMessage = 'Quantity must be greater than zero.');
+          return;
+        }
+        if (!_unitPrice.isFinite || _unitPrice.isNaN || _unitPrice <= 0) {
+          setState(() =>
+              _errorMessage = 'Selling price must be greater than zero (₹ > 0).');
+          return;
+        }
+        if (!_discount.isFinite || _discount.isNaN || _discount < 0) {
+          setState(() => _errorMessage = 'Discount cannot be negative.');
+          return;
+        }
+        if (_discount > (_quantity * _unitPrice)) {
+          setState(() => _errorMessage =
+              'Discount cannot exceed subtotal (₹${(_quantity * _unitPrice).toStringAsFixed(2)}).');
+          return;
+        }
+
+        // Cashier Authorization Guard
+        if (widget.role != UserRole.owner) {
+          if (_isPriceOverridden) {
+            setState(() => _errorMessage =
+                'Unauthorized price change: Cashiers cannot modify catalog price (₹${_selectedProduct!.standardSellingPrice.toStringAsFixed(2)}). Owner authorization required.');
+            return;
+          }
+          final gross = _quantity * _unitPrice;
+          if (_discount > 0 && gross > 0) {
+            final pct = (_discount / gross) * 100.0;
+            if (double.parse(pct.toStringAsFixed(4)) > 10.00) {
+              setState(() => _errorMessage =
+                  'Unauthorized discount: Cashier discount exceeds allowed maximum of 10%. Owner authorization required.');
+              return;
+            }
+          }
+        }
+
+        if (notifier != null) {
+          final available = _getAvailableStock(notifier);
+          if (_quantity > available) {
+            setState(() => _errorMessage =
+                'Cannot sell $_quantity pkts. Only $available pkts available in stock.');
+            return;
+          }
+        }
+      } else {
+        // Multi-item cart checkout validation: validate every product's stock & cashier discount at selected outlet
+        if (widget.role != UserRole.owner) {
+          for (final item in _additionalCartItems) {
+            if (item.isPriceOverridden) {
+              setState(() => _errorMessage =
+                  'Unauthorized price change on "${item.product.name}": Cashiers cannot modify catalog price. Owner authorization required.');
+              return;
+            }
+            if (!item.discount.isFinite || item.discount.isNaN || item.discount < 0) {
+              setState(() => _errorMessage =
+                  'Invalid discount on "${item.product.name}": must be a non-negative finite number.');
+              return;
+            }
+            if (item.discount > item.grossTotal) {
+              setState(() => _errorMessage =
+                  'Discount on "${item.product.name}" cannot exceed subtotal (₹${item.grossTotal.toStringAsFixed(2)}).');
+              return;
+            }
+            if (item.grossTotal > 0 && item.discount > 0) {
+              final pct = (item.discount / item.grossTotal) * 100.0;
+              if (double.parse(pct.toStringAsFixed(4)) > 10.00) {
+                setState(() => _errorMessage =
+                    'Unauthorized discount on "${item.product.name}": Cashier discount (${pct.toStringAsFixed(1)}%) exceeds allowed maximum of 10%. Owner authorization required.');
+                return;
+              }
+            }
+          }
+        }
+
+        if (notifier != null) {
+          for (final item in _additionalCartItems) {
+            final summary = notifier.inventorySummaries
+                .where((s) => s.product.id == item.product.id)
+                .firstOrNull;
+            final available = summary == null
+                ? 0
+                : (_selectedLocationId == LocationConstants.neemranaId
+                    ? summary.neemranaFinishedStock
+                    : summary.jaipurFinishedStock);
+            if (item.quantity > available) {
+              setState(() => _errorMessage =
+                  'Cannot sell ${item.quantity} pkts of ${item.product.name}. Only $available pkts available in stock.');
+              return;
+            }
+          }
         }
       }
       setState(() {
@@ -225,7 +456,12 @@ class _GuidedNewSaleScreenState extends State<GuidedNewSaleScreen> {
   Future<void> _handleCompleteSaleAndSendWhatsApp() async {
     if (_isSubmitting || _completedSale != null) return;
     final notifier = InventoryProvider.maybeOf(context);
-    if (notifier == null || _selectedProduct == null) return;
+    final itemsToSubmit = _allCartItems;
+    if (notifier == null || itemsToSubmit.isEmpty) {
+      setState(() => _errorMessage = 'Cart is empty. Please select a product.');
+      return;
+    }
+    final primaryItem = itemsToSubmit.first;
 
     setState(() {
       _isSubmitting = true;
@@ -233,18 +469,22 @@ class _GuidedNewSaleScreenState extends State<GuidedNewSaleScreen> {
     });
 
     try {
-      // 1. Commit sale through existing secure Supabase RPC
+      // 1. Commit sale through secure Supabase RPC with Idempotency Token
+      _clientRequestId ??= IdGenerator.generateUuidV4();
       final createdSale = await notifier.recordSale(
-        productId: _selectedProduct!.id,
-        quantity: _quantity,
+        items: itemsToSubmit,
+        productId: primaryItem.product.id,
+        quantity: primaryItem.quantity,
+        clientRequestId: _clientRequestId,
         customerName: _nameCtrl.text.trim(),
         customerPhone: _phoneCtrl.text.trim(),
         paymentMethod: _paymentMethod,
         locationId: _selectedLocationId,
         invoiceType: 'NON_GST',
         totalAmount: _totalAmount,
-        unitPrice: _unitPrice,
-        discount: _discount,
+        unitPrice: primaryItem.unitPrice,
+        discount: primaryItem.discount,
+        callerRole: widget.role.name,
       );
 
       if (!mounted) return;
@@ -258,7 +498,7 @@ class _GuidedNewSaleScreenState extends State<GuidedNewSaleScreen> {
         return;
       }
 
-      // 2. Lock committed sale and transition to completion step
+      // 2. Lock committed sale, clear client request token, and transition to completion
       setState(() {
         _completedSale = createdSale;
         _currentStep = 3;
@@ -544,12 +784,14 @@ class _GuidedNewSaleScreenState extends State<GuidedNewSaleScreen> {
                 // Product Dropdown
                 DropdownButtonFormField<Product>(
                   key: const Key('guided_product_select'),
-                  initialValue: _selectedProduct,
+                  // ignore: deprecated_member_use
+                  value: _selectedProduct,
                   decoration: const InputDecoration(
                     labelText: 'Select Product *',
                     border: OutlineInputBorder(),
                   ),
                   items: notifier.products
+                      .where((p) => p.active)
                       .map((p) => DropdownMenuItem(
                             value: p,
                             child: Text('${p.name} (${p.packageSize})'),
@@ -799,7 +1041,9 @@ class _GuidedNewSaleScreenState extends State<GuidedNewSaleScreen> {
                       ],
                     ),
                     Text(
-                      'Subtotal: ₹${_totalAmount.toStringAsFixed(2)}',
+                      _additionalCartItems.isEmpty
+                          ? 'Subtotal: ₹${_totalAmount.toStringAsFixed(2)}'
+                          : 'Item Total: ₹${_currentLineTotal.toStringAsFixed(2)}',
                       style: const TextStyle(
                         fontSize: 18,
                         fontWeight: FontWeight.bold,
@@ -811,7 +1055,98 @@ class _GuidedNewSaleScreenState extends State<GuidedNewSaleScreen> {
               ],
             ),
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 12),
+
+          // Add Product to Bill Button
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              key: const Key('add_item_to_cart_button'),
+              style: OutlinedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+              ),
+              onPressed: _addCurrentProductToCart,
+              icon: const Icon(Icons.add_shopping_cart_rounded, size: 18),
+              label: Text(
+                _additionalCartItems.isEmpty
+                    ? '+ Add Product to Bill'
+                    : '+ Add Another Product to Bill',
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          // Items in Current Bill Card
+          if (_additionalCartItems.isNotEmpty) ...[
+            KizunaCard(
+              padding: const EdgeInsets.all(14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        'Items in this Bill (${_additionalCartItems.length} ${_additionalCartItems.length == 1 ? "product" : "products"})',
+                        style: const TextStyle(
+                            fontWeight: FontWeight.bold, fontSize: 13),
+                      ),
+                      Text(
+                        'Bill Total: ₹${_totalAmount.toStringAsFixed(2)}',
+                        style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: AppColors.primary,
+                            fontSize: 13),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  const Divider(height: 1),
+                  const SizedBox(height: 6),
+                  ..._additionalCartItems.asMap().entries.map((entry) {
+                    final idx = entry.key;
+                    final itm = entry.value;
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 4),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              '${itm.product.name} (${itm.product.packageSize}) × ${itm.quantity} pkts (${itm.product.calculateTotalWeight(itm.quantity)}) @ ₹${itm.unitPrice.toStringAsFixed(2)}${itm.discount > 0 ? " (-₹${itm.discount.toStringAsFixed(2)})" : ""}',
+                              style: const TextStyle(
+                                  fontSize: 12, fontWeight: FontWeight.w500),
+                            ),
+                          ),
+                          Text(
+                            '₹${itm.lineTotal.toStringAsFixed(2)}',
+                            key: Key('line_total_$idx'),
+                            style: const TextStyle(
+                                fontSize: 12, fontWeight: FontWeight.bold),
+                          ),
+                          const SizedBox(width: 8),
+                          IconButton(
+                            key: Key('remove_cart_item_$idx'),
+                            icon: const Icon(Icons.remove_circle_outline,
+                                color: Colors.red, size: 20),
+                            tooltip: 'Remove item from bill',
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(),
+                            onPressed: () => _removeCartItem(idx),
+                          ),
+                        ],
+                      ),
+                    );
+                  }),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
+          const SizedBox(height: 4),
 
           // Continue to Customer & Payment Button
           SizedBox(
@@ -1178,51 +1513,54 @@ class _GuidedNewSaleScreenState extends State<GuidedNewSaleScreen> {
               ),
               const SizedBox(height: 6),
 
-              // Line Item
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          _selectedProduct?.name ?? 'Product',
-                          style: const TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        Text(
-                          '$_quantity pkts @ ₹${_unitPrice.toStringAsFixed(2)}${_discount > 0 ? " (Disc: -₹${_discount.toStringAsFixed(2)})" : ""}',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: Colors.grey.shade600,
-                          ),
-                        ),
-                        if (_isPriceOverridden) ...[
-                          const SizedBox(height: 2),
+              // Line Items in Review
+              for (final item in _allCartItems) ...[
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
                           Text(
-                            'Price override from standard ₹${_selectedProduct?.standardSellingPrice.toStringAsFixed(2)}',
-                            style: TextStyle(
-                              fontSize: 11,
-                              fontStyle: FontStyle.italic,
-                              color: Colors.amber.shade900,
+                            item.product.name,
+                            style: const TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.bold,
                             ),
                           ),
+                          Text(
+                            '${item.quantity} pkts @ ₹${item.unitPrice.toStringAsFixed(2)}${item.discount > 0 ? " (Disc: -₹${item.discount.toStringAsFixed(2)})" : ""} • Total: ${item.product.calculateTotalWeight(item.quantity)}',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.grey.shade600,
+                            ),
+                          ),
+                          if (item.isPriceOverridden) ...[
+                            const SizedBox(height: 2),
+                            Text(
+                              'Price override from standard ₹${item.product.standardSellingPrice.toStringAsFixed(2)}',
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontStyle: FontStyle.italic,
+                                color: Colors.amber.shade900,
+                              ),
+                            ),
+                          ],
                         ],
-                      ],
+                      ),
                     ),
-                  ),
-                  Text(
-                    '₹${_totalAmount.toStringAsFixed(2)}',
-                    style: const TextStyle(
-                      fontSize: 15,
-                      fontWeight: FontWeight.bold,
+                    Text(
+                      '₹${item.lineTotal.toStringAsFixed(2)}',
+                      style: const TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
-                  ),
-                ],
-              ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+              ],
               const SizedBox(height: 16),
               const Divider(thickness: 1.2),
               const SizedBox(height: 12),
@@ -1251,27 +1589,34 @@ class _GuidedNewSaleScreenState extends State<GuidedNewSaleScreen> {
         const SizedBox(height: 14),
 
         // Process Guarantee Notice
-        Container(
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: Colors.blue.shade50,
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: Colors.blue.shade200),
-          ),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Icon(Icons.verified_user_rounded,
-                  color: Colors.blue.shade700, size: 20),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  'Tapping "Complete Sale & Send WhatsApp" below will securely record this sale in Supabase, decrement $storeName stock by $_quantity pkts, and automatically launch WhatsApp.',
-                  style: TextStyle(fontSize: 12, color: Colors.blue.shade900),
-                ),
+        Builder(
+          builder: (context) {
+            final totalPkts =
+                _allCartItems.fold<int>(0, (sum, i) => sum + i.quantity);
+            final itemsCount = _allCartItems.length;
+            return Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.blue.shade50,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.blue.shade200),
               ),
-            ],
-          ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.verified_user_rounded,
+                      color: Colors.blue.shade700, size: 20),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Tapping "Complete Sale & Send WhatsApp" below will securely record this sale in Supabase, decrement $storeName stock by $totalPkts pkts across $itemsCount item(s), and automatically launch WhatsApp.',
+                      style: TextStyle(fontSize: 12, color: Colors.blue.shade900),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
         ),
         const SizedBox(height: 24),
       ],

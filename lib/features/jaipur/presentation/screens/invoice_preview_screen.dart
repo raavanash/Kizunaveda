@@ -258,10 +258,10 @@ class InvoicePreviewScreen extends StatelessWidget {
                     if (sale.items.isNotEmpty)
                       ...sale.items.map((item) {
                         final prod = productMap[item.productId];
-                        final name = prod?.name ?? 'Product (${item.productId})';
-                        final sku = prod?.sku ?? '';
-                        final size = prod?.packageSize ?? '';
-                        final lineTotal = item.quantity * item.unitPrice;
+                        final name = item.productName ?? prod?.name ?? 'Product (${item.productId})';
+                        final sku = item.sku ?? prod?.sku ?? '';
+                        final size = item.packageSize ?? prod?.packageSize ?? '';
+                        final lineTotal = item.lineTotal;
 
                         return Padding(
                           padding: const EdgeInsets.symmetric(
@@ -282,7 +282,7 @@ class InvoicePreviewScreen extends StatelessWidget {
                                     ),
                                     if (sku.isNotEmpty || size.isNotEmpty)
                                       Text(
-                                        '$sku ${size.isNotEmpty ? "($size)" : ""}',
+                                        '$sku ${size.isNotEmpty ? "($size)" : ""}${item.discount > 0 ? " (Disc: -₹${item.discount.toStringAsFixed(2)})" : ""}',
                                         style: const TextStyle(
                                           fontSize: 11,
                                           color: AppColors.textSecondaryLight,

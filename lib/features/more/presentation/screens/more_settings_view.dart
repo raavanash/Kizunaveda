@@ -148,10 +148,10 @@ class MoreSettingsView extends StatelessWidget {
                           child: const Icon(Icons.local_shipping_rounded,
                               color: Colors.blue),
                         ),
-                        title: const Text('In-Transit Stock Transfers',
+                        title: const Text('In-Transit Stock Manifests (Archived)',
                             style: TextStyle(fontWeight: FontWeight.w600)),
                         subtitle:
-                            const Text('Inter-unit transfer dispatch & receipt'),
+                            const Text('Historical audit log (transfers disabled)'),
                         trailing: const Icon(Icons.chevron_right_rounded),
                         onTap: () =>
                             AppRoutes.navigateToInTransitStock(context),
@@ -189,6 +189,25 @@ class MoreSettingsView extends StatelessWidget {
                             ),
                           );
                         },
+                      ),
+                      const Divider(height: 1),
+                      ListTile(
+                        key: const Key('admin_product_master_tile'),
+                        leading: Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: Colors.teal.withValues(alpha: 0.12),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: const Icon(Icons.category_rounded,
+                              color: Colors.teal),
+                        ),
+                        title: const Text('Product Master Management',
+                            style: TextStyle(fontWeight: FontWeight.w600)),
+                        subtitle: const Text(
+                            'Add dry fruits, edit SKUs, pack sizes & active status'),
+                        trailing: const Icon(Icons.chevron_right_rounded),
+                        onTap: () => AppRoutes.navigateToProductMaster(context),
                       ),
                     ],
                   ),

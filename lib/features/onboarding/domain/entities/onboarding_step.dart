@@ -67,8 +67,7 @@ class OnboardingStep {
             bulletPoints: [
               'Combined stock is calculated from both stores, never edited independently.',
               'Physical stock counts are updated exclusively via approved Stock Adjustments.',
-              'Stock adjustments require mandatory audit reason codes for traceability.',
-              'Monitor inter-unit stock transfers under More → In-Transit Stock.',
+              'Neemrana and Jaipur retail stores maintain strictly independent inventories.',
             ],
             shortcutLabel: 'Open Inventory',
             shortcutType: OnboardingShortcutType.inventory,

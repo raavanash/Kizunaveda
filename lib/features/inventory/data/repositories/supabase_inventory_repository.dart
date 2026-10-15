@@ -12,6 +12,7 @@ import '../../domain/entities/stock_transfer.dart';
 import '../../domain/entities/store_inventory.dart';
 import '../../domain/entities/stock_adjustment.dart';
 import '../../domain/repositories/inventory_repository.dart';
+import '../../../sales/domain/entities/cart_item.dart';
 
 /// Supabase production implementation of [IInventoryRepository].
 class SupabaseInventoryRepository implements IInventoryRepository {
@@ -48,14 +49,24 @@ class SupabaseInventoryRepository implements IInventoryRepository {
 
   @override
   Future<List<Product>> getProducts() async {
-    final response = await _client
-        .from('products')
-        .select()
-        .eq('active', true)
-        .order('name', ascending: true);
-    return (response as List)
-        .map((json) => Product.fromJson(json as Map<String, dynamic>))
-        .toList();
+    try {
+      final response = await _client
+          .from('products')
+          .select('*, product_procurement_costs(purchase_cost)')
+          .order('name', ascending: true);
+      return (response as List)
+          .map((json) => Product.fromJson(json as Map<String, dynamic>))
+          .toList();
+    } catch (e) {
+      debugPrint('[INVENTORY] getProducts procurement costs join error: $e. Falling back to basic product query.');
+      final fallbackResponse = await _client
+          .from('products')
+          .select()
+          .order('name', ascending: true);
+      return (fallbackResponse as List)
+          .map((json) => Product.fromJson(json as Map<String, dynamic>))
+          .toList();
+    }
   }
 
   @override
@@ -63,18 +74,216 @@ class SupabaseInventoryRepository implements IInventoryRepository {
     required String name,
     required String packageSize,
     required String sku,
+    double? standardSellingPrice,
+    double? purchaseCost,
+    bool active = true,
   }) async {
+    final cleanName = name.trim();
+    if (cleanName.isEmpty) throw Exception('Product name cannot be empty.');
+    final cleanSize = packageSize.trim();
+    if (cleanSize.isEmpty) throw Exception('Package size cannot be empty.');
+    final cleanSku = sku.trim().toUpperCase();
+    if (cleanSku.isEmpty) throw Exception('Product SKU cannot be empty.');
+
+    if (standardSellingPrice != null && standardSellingPrice < 0) {
+      throw Exception('Standard selling price cannot be negative.');
+    }
+    if (purchaseCost != null && purchaseCost < 0) {
+      throw Exception('Purchase cost cannot be negative.');
+    }
+
+    final existing = await _client
+        .from('products')
+        .select('id')
+        .eq('sku', cleanSku)
+        .maybeSingle();
+    if (existing != null) {
+      throw Exception('Product with SKU "$cleanSku" already exists.');
+    }
+
+    final insertData = <String, dynamic>{
+      'name': cleanName,
+      'package_size': cleanSize,
+      'sku': cleanSku,
+      'active': active,
+    };
+    if (standardSellingPrice != null) {
+      insertData['standard_selling_price'] = standardSellingPrice;
+    }
+    if (purchaseCost != null) {
+      insertData['purchase_cost'] = purchaseCost;
+    }
+
+    Map<String, dynamic> response;
+    try {
+      response = await _client
+          .from('products')
+          .insert(insertData)
+          .select()
+          .single();
+    } catch (e) {
+      final errStr = e.toString().toLowerCase();
+      if (errStr.contains('purchase_cost') ||
+          errStr.contains('standard_selling_price') ||
+          errStr.contains('pgrst204') ||
+          errStr.contains('42703')) {
+        debugPrint('[INVENTORY] addProduct schema fallback: $e');
+        final baseData = <String, dynamic>{
+          'name': cleanName,
+          'package_size': cleanSize,
+          'sku': cleanSku,
+          'active': active,
+        };
+        response = await _client
+            .from('products')
+            .insert(baseData)
+            .select()
+            .single();
+      } else {
+        rethrow;
+      }
+    }
+
+    final newProductId = response['id'] as String;
+
+    if (standardSellingPrice != null || purchaseCost != null) {
+      try {
+        await _client.rpc(
+          'fn_update_product_pricing',
+          params: {
+            'p_product_id': newProductId,
+            'p_standard_selling_price': standardSellingPrice ?? 100.0,
+            'p_purchase_cost': purchaseCost ?? 0.0,
+          },
+        );
+      } catch (_) {
+        if (purchaseCost != null && purchaseCost > 0) {
+          try {
+            await _client.from('product_procurement_costs').insert({
+              'product_id': newProductId,
+              'purchase_cost': purchaseCost,
+            });
+          } catch (_) {}
+        }
+      }
+    }
+
+    final createdProduct = Product.fromJson(response);
+    return createdProduct.copyWith(
+      standardSellingPrice: standardSellingPrice ?? createdProduct.standardSellingPrice,
+      purchaseCost: purchaseCost ?? createdProduct.purchaseCost,
+    );
+  }
+
+  @override
+  Future<Product> updateProduct({
+    required String id,
+    String? name,
+    String? packageSize,
+    String? sku,
+    double? standardSellingPrice,
+    double? purchaseCost,
+    bool? active,
+  }) async {
+    final Map<String, dynamic> updates = {};
+    if (name != null) {
+      final cleanName = name.trim();
+      if (cleanName.isEmpty) throw Exception('Product name cannot be empty.');
+      updates['name'] = cleanName;
+    }
+    if (packageSize != null) {
+      final cleanSize = packageSize.trim();
+      if (cleanSize.isEmpty) throw Exception('Package size cannot be empty.');
+      updates['package_size'] = cleanSize;
+    }
+    if (sku != null) {
+      final cleanSku = sku.trim().toUpperCase();
+      if (cleanSku.isEmpty) throw Exception('Product SKU cannot be empty.');
+      final existing = await _client
+          .from('products')
+          .select('id')
+          .eq('sku', cleanSku)
+          .neq('id', id)
+          .maybeSingle();
+      if (existing != null) {
+        throw Exception('Product with SKU "$cleanSku" already exists.');
+      }
+      updates['sku'] = cleanSku;
+    }
+    if (active != null) {
+      updates['active'] = active;
+    }
+    if (standardSellingPrice != null) {
+      if (standardSellingPrice < 0) {
+        throw Exception('Standard selling price cannot be negative.');
+      }
+      updates['standard_selling_price'] = standardSellingPrice;
+    }
+    if (purchaseCost != null) {
+      if (purchaseCost < 0) {
+        throw Exception('Purchase cost cannot be negative.');
+      }
+      updates['purchase_cost'] = purchaseCost;
+    }
+
+    if (updates.isNotEmpty) {
+      try {
+        await _client
+            .from('products')
+            .update(updates)
+            .eq('id', id);
+      } catch (e) {
+        final errStr = e.toString().toLowerCase();
+        if (errStr.contains('purchase_cost') ||
+            errStr.contains('standard_selling_price') ||
+            errStr.contains('pgrst204') ||
+            errStr.contains('42703')) {
+          debugPrint('[INVENTORY] updateProduct schema fallback: $e');
+          final safeUpdates = Map<String, dynamic>.from(updates)
+            ..remove('purchase_cost')
+            ..remove('standard_selling_price');
+          if (safeUpdates.isNotEmpty) {
+            await _client.from('products').update(safeUpdates).eq('id', id);
+          }
+        } else {
+          rethrow;
+        }
+      }
+    }
+
+    if (standardSellingPrice != null || purchaseCost != null) {
+      try {
+        await _client.rpc(
+          'fn_update_product_pricing',
+          params: {
+            'p_product_id': id,
+            'p_standard_selling_price': standardSellingPrice ?? 100.0,
+            'p_purchase_cost': purchaseCost ?? 0.0,
+          },
+        );
+      } catch (e) {
+        debugPrint('[INVENTORY] fn_update_product_pricing fallback: $e');
+        if (purchaseCost != null) {
+          try {
+            await _client.from('product_procurement_costs').upsert({
+              'product_id': id,
+              'purchase_cost': purchaseCost,
+            });
+          } catch (_) {}
+        }
+      }
+    }
+
     final response = await _client
         .from('products')
-        .insert({
-          'name': name.trim(),
-          'package_size': packageSize.trim(),
-          'sku': sku.trim().toUpperCase(),
-          'active': true,
-        })
         .select()
+        .eq('id', id)
         .single();
-    return Product.fromJson(response);
+    final p = Product.fromJson(response);
+    return p.copyWith(
+      standardSellingPrice: standardSellingPrice ?? p.standardSellingPrice,
+      purchaseCost: purchaseCost ?? p.purchaseCost,
+    );
   }
 
   @override
@@ -89,16 +298,44 @@ class SupabaseInventoryRepository implements IInventoryRepository {
     if (purchaseCost < 0) {
       throw Exception('Purchase cost cannot be negative.');
     }
+    try {
+      await _client.rpc(
+        'fn_update_product_pricing',
+        params: {
+          'p_product_id': productId,
+          'p_standard_selling_price': standardSellingPrice,
+          'p_purchase_cost': purchaseCost,
+        },
+      );
+    } catch (e) {
+      debugPrint('[INVENTORY] fn_update_product_pricing fallback: $e');
+      try {
+        await _client
+            .from('products')
+            .update({
+              'standard_selling_price': standardSellingPrice,
+            })
+            .eq('id', productId);
+      } catch (_) {}
+      try {
+        await _client
+            .from('product_procurement_costs')
+            .upsert({
+              'product_id': productId,
+              'purchase_cost': purchaseCost,
+            });
+      } catch (_) {}
+    }
     final response = await _client
         .from('products')
-        .update({
-          'standard_selling_price': standardSellingPrice,
-          'purchase_cost': purchaseCost,
-        })
-        .eq('id', productId)
         .select()
+        .eq('id', productId)
         .single();
-    return Product.fromJson(response);
+    final p = Product.fromJson(response);
+    return p.copyWith(
+      standardSellingPrice: standardSellingPrice,
+      purchaseCost: purchaseCost,
+    );
   }
 
   @override
@@ -297,6 +534,75 @@ class SupabaseInventoryRepository implements IInventoryRepository {
   }
 
   @override
+  Future<StockAdjustment> receiveStoreStock({
+    required String locationId,
+    required String productId,
+    required int quantity,
+    String? notes,
+  }) async {
+    try {
+      final response = await _client.rpc(
+        'fn_receive_store_stock',
+        params: {
+          'p_location_id': locationId,
+          'p_product_id': productId,
+          'p_quantity': quantity,
+          'p_notes': notes != null && notes.trim().isNotEmpty ? notes.trim() : null,
+        },
+      );
+      final map = Map<String, dynamic>.from(response as Map);
+      return StockAdjustment(
+        id: (map['adjustment_id'] ?? '') as String,
+        locationId: locationId,
+        productId: productId,
+        previousQuantity: (map['previous_quantity'] as num?)?.toInt() ?? 0,
+        newQuantity: (map['new_quantity'] as num?)?.toInt() ?? quantity,
+        changeQuantity: (map['change_quantity'] as num?)?.toInt() ?? quantity,
+        reason: 'STOCK_RECEIPT',
+        notes: notes,
+        createdAt: DateTime.now(),
+      );
+    } catch (e) {
+      final msg = e.toString().toLowerCase();
+      // If server has not had Migration V1.6 applied yet (PGRST202: function not found in schema cache)
+      if (msg.contains('pgrst202') ||
+          msg.contains('fn_receive_store_stock') ||
+          msg.contains('42883')) {
+        debugPrint('[INVENTORY] fn_receive_store_stock not present on server ($e). Falling back to fn_adjust_store_stock.');
+
+        // 1. Fetch current on-hand stock for (locationId, productId)
+        int currentQty = 0;
+        try {
+          final invResponse = await _client
+              .from('store_inventory')
+              .select('current_quantity')
+              .eq('location_id', locationId)
+              .eq('product_id', productId)
+              .maybeSingle();
+          if (invResponse != null && invResponse['current_quantity'] != null) {
+            currentQty = (invResponse['current_quantity'] as num).toInt();
+          }
+        } catch (invErr) {
+          debugPrint('[INVENTORY] Could not read baseline stock before adjustment: $invErr');
+        }
+
+        // 2. Additively calculate target stock
+        final targetQty = currentQty + quantity;
+
+        // 3. Fall back to fn_adjust_store_stock (created in V1.3, verified remotely)
+        return await adjustStoreStock(
+          locationId: locationId,
+          productId: productId,
+          newQuantity: targetQty,
+          reason: 'STOCK_RECEIPT',
+          notes: notes,
+        );
+      }
+      rethrow;
+    }
+  }
+
+  @override
   Future<List<StockAdjustment>> getStockAdjustments({String? locationId}) async {
     try {
       var query = _client.from('stock_adjustments').select();
@@ -339,18 +645,10 @@ class SupabaseInventoryRepository implements IInventoryRepository {
     String? toLocationId,
     DateTime? dispatchedAt,
   }) async {
-    final response = await _client
-        .from('transfers')
-        .insert({
-          'product_id': productId,
-          'from_location_id': fromLocationId ?? Location.neemranaId,
-          'to_location_id': toLocationId ?? Location.jaipurId,
-          'dispatched_quantity': dispatchedQuantity,
-          'dispatched_at': (dispatchedAt ?? DateTime.now()).toIso8601String(),
-        })
-        .select()
-        .single();
-    return StockTransfer.fromJson(response);
+    throw UnsupportedError(
+      'Inter-store stock transfers are permanently disabled: '
+      'Neemrana and Jaipur operate as independent retail stores.',
+    );
   }
 
   @override
@@ -360,37 +658,69 @@ class SupabaseInventoryRepository implements IInventoryRepository {
     String? discrepancyReason,
     DateTime? receivedAt,
   }) async {
-    final response = await _client.rpc(
-      'fn_confirm_jaipur_receipt',
-      params: {
-        'p_transfer_id': transferId,
-        'p_received_quantity': receivedQuantity,
-        'p_discrepancy_reason': discrepancyReason?.trim(),
-      },
+    throw UnsupportedError(
+      'Inter-store stock transfers are permanently disabled: '
+      'Neemrana and Jaipur operate as independent retail stores.',
     );
-    return StockTransfer.fromJson(Map<String, dynamic>.from(response as Map));
   }
 
   @override
-  Future<List<Sale>> getSales() async {
+  Future<List<Sale>> getSales({
+    int limit = 50,
+    int offset = 0,
+    String? locationId,
+  }) async {
+    final to = offset + limit - 1;
     try {
-      final response = await _client
-          .from('sales')
-          .select('*, sale_items(*)')
-          .order('created_at', ascending: false);
+      final baseQuery = (locationId != null && locationId.isNotEmpty)
+          ? _client
+              .from('sales')
+              .select('*, sale_items(*, sale_item_procurement_costs(unit_cost))')
+              .eq('location_id', locationId)
+          : _client
+              .from('sales')
+              .select('*, sale_items(*, sale_item_procurement_costs(unit_cost))');
+
+      final response = await baseQuery
+          .order('created_at', ascending: false)
+          .range(offset, to);
+
       return (response as List)
           .map((json) => Sale.fromJson(json as Map<String, dynamic>))
           .toList();
     } catch (e) {
-      debugPrint('[INVENTORY] sales query error: $e');
-      rethrow;
+      debugPrint(
+          '[INVENTORY] getSales procurement costs join error: $e. Falling back to basic sales query.');
+      try {
+        final fallbackQuery = (locationId != null && locationId.isNotEmpty)
+            ? _client
+                .from('sales')
+                .select('*, sale_items(*)')
+                .eq('location_id', locationId)
+            : _client
+                .from('sales')
+                .select('*, sale_items(*)');
+
+        final fallbackResponse = await fallbackQuery
+            .order('created_at', ascending: false)
+            .range(offset, to);
+
+        return (fallbackResponse as List)
+            .map((json) => Sale.fromJson(json as Map<String, dynamic>))
+            .toList();
+      } catch (fallbackError) {
+        debugPrint('[INVENTORY] sales query fallback error: $fallbackError');
+        rethrow;
+      }
     }
   }
 
   @override
   Future<Sale> recordSale({
-    required String productId,
-    required int quantity,
+    String? productId,
+    int? quantity,
+    List<CartItem>? items,
+    String? clientRequestId,
     String? customerName,
     String? customerPhone,
     String paymentMethod = 'CASH',
@@ -405,21 +735,32 @@ class SupabaseInventoryRepository implements IInventoryRepository {
     double? unitPrice,
     double discount = 0.0,
     DateTime? soldAt,
+    String? callerRole,
   }) async {
-    final effectiveUnitPrice = unitPrice ??
-        (totalAmount > 0 && quantity > 0 ? (totalAmount / quantity) : 0.0);
-    final params = <String, dynamic>{
-      'p_customer_name': customerName?.trim(),
-      'p_customer_phone': customerPhone?.trim(),
-      'p_payment_method': paymentMethod.trim().toUpperCase(),
-      'p_items': [
+    final List<Map<String, dynamic>> itemsPayload;
+    if (items != null && items.isNotEmpty) {
+      itemsPayload = items.map((i) => i.toRpcItemJson()).toList();
+    } else if (productId != null && quantity != null) {
+      final effectiveUnitPrice = unitPrice ??
+          (totalAmount > 0 && quantity > 0 ? (totalAmount / quantity) : 0.0);
+      itemsPayload = [
         {
           'product_id': productId,
           'quantity': quantity,
           'unit_price': effectiveUnitPrice,
           'discount': discount,
         }
-      ],
+      ];
+    } else {
+      throw ArgumentError(
+          'Either items or productId and quantity must be provided.');
+    }
+
+    final params = <String, dynamic>{
+      'p_customer_name': customerName?.trim(),
+      'p_customer_phone': customerPhone?.trim(),
+      'p_payment_method': paymentMethod.trim().toUpperCase(),
+      'p_items': itemsPayload,
       'p_location_id': locationId,
       'p_invoice_type': invoiceType,
       'p_gst_rate': gstRate,
@@ -427,6 +768,7 @@ class SupabaseInventoryRepository implements IInventoryRepository {
       'p_cgst_amount': cgstAmount,
       'p_sgst_amount': sgstAmount,
       'p_igst_amount': igstAmount,
+      'p_client_request_id': clientRequestId,
     };
 
     final response = await _client.rpc(
@@ -463,7 +805,6 @@ class SupabaseInventoryRepository implements IInventoryRepository {
     } catch (_) {
       // StoreInventory table fallback if not yet migrated
     }
-    final transfers = await getTransfers();
     final sales = await getSales();
 
     final summaries = <ProductInventorySummary>[];
@@ -477,13 +818,9 @@ class SupabaseInventoryRepository implements IInventoryRepository {
           .where((s) => s.productId == product.id && s.locationId == Location.neemranaId)
           .fold(0, (sum, item) => sum + item.quantity);
 
-      final totalDispatched = transfers
-          .where((t) => t.productId == product.id)
-          .fold(0, (sum, item) => sum + item.dispatchedQuantity);
-
-      final totalReceived = transfers
-          .where((t) => t.productId == product.id && t.receivedQuantity != null)
-          .fold(0, (sum, item) => sum + (item.receivedQuantity ?? 0));
+      // Inter-store transfers are permanently disabled: stock is never transferred
+      const totalDispatched = 0;
+      const totalReceived = 0;
 
       final totalJaipurStockIn = stockInRecords
           .where((s) => s.productId == product.id && s.locationId == Location.jaipurId)

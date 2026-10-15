@@ -10,14 +10,20 @@ import '../../domain/entities/stock_transfer.dart';
 import '../../domain/entities/store_inventory.dart';
 import '../../domain/entities/stock_adjustment.dart';
 import '../../domain/repositories/inventory_repository.dart';
+import '../../../sales/domain/entities/cart_item.dart';
 
 enum InventoryStatus { initial, loading, success, error }
 
 /// State controller managing V1 Inventory Flow with location-based validation.
 class InventoryNotifier extends ChangeNotifier {
   final IInventoryRepository repository;
+  final int _salesPageSize;
+  int _serverSalesOffset = 0;
 
-  InventoryNotifier({required this.repository}) {
+  InventoryNotifier({
+    required this.repository,
+    this._salesPageSize = 50,
+  }) {
     loadInventoryData();
   }
 
@@ -31,6 +37,10 @@ class InventoryNotifier extends ChangeNotifier {
   List<PackingRecord> _packingRecords = [];
   List<StockTransfer> _transfers = [];
   List<Sale> _sales = [];
+  bool _hasMoreSales = true;
+  bool _isLoadingMoreSales = false;
+  String? _salesPaginationError;
+
   List<ProductInventorySummary> _inventorySummaries = [];
   List<StoreInventory> _storeInventories = [];
   List<StockAdjustment> _stockAdjustments = [];
@@ -46,6 +56,10 @@ class InventoryNotifier extends ChangeNotifier {
   List<PackingRecord> get packingRecords => _packingRecords;
   List<StockTransfer> get transfers => _transfers;
   List<Sale> get sales => _sales;
+  bool get hasMoreSales => _hasMoreSales;
+  bool get isLoadingMoreSales => _isLoadingMoreSales;
+  String? get salesPaginationError => _salesPaginationError;
+  int get salesPageSize => _salesPageSize;
   List<ProductInventorySummary> get inventorySummaries => _inventorySummaries;
   List<StoreInventory> get storeInventories => _storeInventories;
   List<StockAdjustment> get stockAdjustments => _stockAdjustments;
@@ -74,10 +88,14 @@ class InventoryNotifier extends ChangeNotifier {
         errors.add('Store Inventory: ${e.toString().replaceAll('Exception: ', '')}');
         return <StoreInventory>[];
       }),
-      repository.getSales().then((v) => _sales = v).catchError((e) {
+      repository.getSales(limit: _salesPageSize, offset: 0).then((v) {
+        _sales = List<Sale>.from(v);
+        _serverSalesOffset = v.length;
+        _hasMoreSales = v.length >= _salesPageSize;
+        _salesPaginationError = null;
+      }).catchError((e) {
         debugPrint('[INVENTORY] Failed to load sales: $e');
         errors.add('Sales: ${e.toString().replaceAll('Exception: ', '')}');
-        return <Sale>[];
       }),
       repository.getRawMaterials().then((v) => _rawMaterials = v).catchError((e) {
         debugPrint('[INVENTORY] Failed to load raw materials: $e');
@@ -125,11 +143,14 @@ class InventoryNotifier extends ChangeNotifier {
   }
 
 
-  /// Create a new Product
+  /// Create a new Product in master catalogue (OWNER authorized)
   Future<bool> addProduct({
     required String name,
     required String packageSize,
     required String sku,
+    double? standardSellingPrice,
+    double? purchaseCost,
+    bool active = true,
   }) async {
     try {
       _errorMessage = null;
@@ -137,6 +158,9 @@ class InventoryNotifier extends ChangeNotifier {
         name: name,
         packageSize: packageSize,
         sku: sku,
+        standardSellingPrice: standardSellingPrice,
+        purchaseCost: purchaseCost,
+        active: active,
       );
       await loadInventoryData();
       return true;
@@ -220,68 +244,47 @@ class InventoryNotifier extends ChangeNotifier {
     }
   }
 
-  /// Dispatch stock from Neemrana to Jaipur
+  /// Inter-store transfers are permanently disabled: Neemrana and Jaipur operate as independent stores.
   Future<bool> createTransfer({
     required String productId,
     required int dispatchedQuantity,
     String? fromLocationId,
     String? toLocationId,
   }) async {
-    try {
-      _errorMessage = null;
-      final summary = _inventorySummaries.firstWhere(
-        (s) => s.product.id == productId,
-        orElse: () => throw Exception('Selected product not found.'),
-      );
-
-      if (dispatchedQuantity > summary.neemranaFinishedStock) {
-        throw Exception(
-            'Cannot dispatch $dispatchedQuantity units. Only ${summary.neemranaFinishedStock} finished packets remaining at Neemrana.');
-      }
-
-      await repository.createTransfer(
-        productId: productId,
-        dispatchedQuantity: dispatchedQuantity,
-        fromLocationId: fromLocationId ?? Location.neemranaId,
-        toLocationId: toLocationId ?? Location.jaipurId,
-      );
-      await loadInventoryData();
-      return true;
-    } catch (e) {
-      _errorMessage = e.toString().replaceAll('Exception: ', '');
-      notifyListeners();
-      return false;
-    }
+    _errorMessage =
+        'Inter-store stock transfers are permanently disabled: '
+        'Neemrana and Jaipur operate as independent retail stores.';
+    notifyListeners();
+    return false;
   }
 
-  /// Confirm receipt of a transfer at Jaipur
+  /// Inter-store transfers are permanently disabled: Neemrana and Jaipur operate as independent stores.
   Future<bool> confirmTransferReceipt({
     required String transferId,
     required int receivedQuantity,
     String? discrepancyReason,
   }) async {
+    _errorMessage =
+        'Inter-store stock transfers are permanently disabled: '
+        'Neemrana and Jaipur operate as independent retail stores.';
+    notifyListeners();
+    return false;
+  }
+
+  /// Atomically receive finished stock into a store location (additive intake)
+  Future<bool> receiveStoreStock({
+    required String locationId,
+    required String productId,
+    required int quantity,
+    String? notes,
+  }) async {
     try {
       _errorMessage = null;
-      final transfer = _transfers.firstWhere(
-        (t) => t.id == transferId,
-        orElse: () => throw Exception('Transfer record not found.'),
-      );
-
-      if (receivedQuantity > transfer.dispatchedQuantity) {
-        throw Exception(
-            'Received quantity ($receivedQuantity) cannot exceed dispatched quantity (${transfer.dispatchedQuantity}).');
-      }
-
-      if (receivedQuantity != transfer.dispatchedQuantity &&
-          (discrepancyReason == null || discrepancyReason.trim().isEmpty)) {
-        throw Exception(
-            'Discrepancy reason is required when received quantity differs from dispatched quantity.');
-      }
-
-      await repository.confirmTransferReceipt(
-        transferId: transferId,
-        receivedQuantity: receivedQuantity,
-        discrepancyReason: discrepancyReason,
+      await repository.receiveStoreStock(
+        locationId: locationId,
+        productId: productId,
+        quantity: quantity,
+        notes: notes,
       );
       await loadInventoryData();
       return true;
@@ -295,10 +298,12 @@ class InventoryNotifier extends ChangeNotifier {
   Sale? _lastCreatedSale;
   Sale? get lastCreatedSale => _lastCreatedSale;
 
-  /// Record a POS sale at Neemrana or Jaipur
+  /// Record a POS sale at Neemrana or Jaipur (supports multi-item cart and idempotency)
   Future<Sale?> recordSale({
-    required String productId,
-    required int quantity,
+    String? productId,
+    int? quantity,
+    List<CartItem>? items,
+    String? clientRequestId,
     String? customerName,
     String? customerPhone,
     String paymentMethod = 'CASH',
@@ -313,30 +318,51 @@ class InventoryNotifier extends ChangeNotifier {
     double totalAmount = 0.0,
     double? unitPrice,
     double discount = 0.0,
+    String? callerRole,
   }) async {
     try {
       _errorMessage = null;
       _lastCreatedSale = null;
-      final effectiveLocationId = locationId ?? targetLocationId ?? Location.jaipurId;
-      final summary = _inventorySummaries.firstWhere(
-        (s) => s.product.id == productId,
-        orElse: () => throw Exception('Selected product not found.'),
-      );
+      final effectiveLocationId =
+          locationId ?? targetLocationId ?? Location.jaipurId;
+      final storeName =
+          effectiveLocationId == Location.neemranaId ? 'Neemrana' : 'Jaipur';
 
-      final availableStock = effectiveLocationId == Location.neemranaId
-          ? summary.neemranaFinishedStock
-          : summary.jaipurFinishedStock;
-
-      final storeName = effectiveLocationId == Location.neemranaId ? 'Neemrana' : 'Jaipur';
-
-      if (quantity > availableStock) {
-        throw Exception(
-            'Cannot record sale of $quantity units. Only $availableStock finished packets available at $storeName.');
+      // Validate stock availability
+      if (items != null && items.isNotEmpty) {
+        for (final item in items) {
+          final summary = _inventorySummaries.firstWhere(
+            (s) => s.product.id == item.product.id,
+            orElse: () =>
+                throw Exception('Product "${item.product.name}" not found.'),
+          );
+          final availableStock = effectiveLocationId == Location.neemranaId
+              ? summary.neemranaFinishedStock
+              : summary.jaipurFinishedStock;
+          if (item.quantity > availableStock) {
+            throw Exception(
+                'Cannot sell ${item.quantity} pkts of "${item.product.name}". Only $availableStock available at $storeName.');
+          }
+        }
+      } else if (productId != null && quantity != null) {
+        final summary = _inventorySummaries.firstWhere(
+          (s) => s.product.id == productId,
+          orElse: () => throw Exception('Selected product not found.'),
+        );
+        final availableStock = effectiveLocationId == Location.neemranaId
+            ? summary.neemranaFinishedStock
+            : summary.jaipurFinishedStock;
+        if (quantity > availableStock) {
+          throw Exception(
+              'Cannot record sale of $quantity units. Only $availableStock finished packets available at $storeName.');
+        }
       }
 
       final createdSale = await repository.recordSale(
         productId: productId,
         quantity: quantity,
+        items: items,
+        clientRequestId: clientRequestId,
         customerName: customerName,
         customerPhone: customerPhone,
         paymentMethod: paymentMethod,
@@ -350,8 +376,12 @@ class InventoryNotifier extends ChangeNotifier {
         totalAmount: totalAmount,
         unitPrice: unitPrice,
         discount: discount,
+        callerRole: callerRole,
       );
       _lastCreatedSale = createdSale;
+      if (!_sales.any((s) => s.id == createdSale.id)) {
+        _sales.insert(0, createdSale);
+      }
       await loadInventoryData();
       return createdSale;
     } catch (e) {
@@ -359,6 +389,45 @@ class InventoryNotifier extends ChangeNotifier {
       notifyListeners();
       return null;
     }
+  }
+
+
+  /// Update product master details (name, packageSize, sku, pricing, active status)
+  Future<bool> updateProduct({
+    required String id,
+    String? name,
+    String? packageSize,
+    String? sku,
+    double? standardSellingPrice,
+    double? purchaseCost,
+    bool? active,
+  }) async {
+    try {
+      _errorMessage = null;
+      await repository.updateProduct(
+        id: id,
+        name: name,
+        packageSize: packageSize,
+        sku: sku,
+        standardSellingPrice: standardSellingPrice,
+        purchaseCost: purchaseCost,
+        active: active,
+      );
+      await loadInventoryData();
+      return true;
+    } catch (e) {
+      _errorMessage = e.toString().replaceAll('Exception: ', '');
+      notifyListeners();
+      return false;
+    }
+  }
+
+  /// Toggle product active / inactive status without deleting historical records
+  Future<bool> toggleProductActive({
+    required String id,
+    required bool active,
+  }) async {
+    return updateProduct(id: id, active: active);
   }
 
   /// Update standard selling price and purchase cost of a product (OWNER authorized)
@@ -444,12 +513,79 @@ class InventoryNotifier extends ChangeNotifier {
     try {
       _errorMessage = null;
       await repository.voidSale(saleId: saleId);
+      final idx = _sales.indexWhere((s) => s.id == saleId);
+      if (idx != -1) {
+        _sales[idx] = _sales[idx].copyWith(status: 'VOIDED');
+      }
       await loadInventoryData();
       return true;
     } catch (e) {
       _errorMessage = e.toString().replaceAll('Exception: ', '');
       notifyListeners();
       return false;
+    }
+  }
+
+  /// Load the next page of sales history from the server.
+  /// Deduplicates records by sale.id to guarantee no duplicate sales or lost records.
+  Future<bool> loadMoreSales({String? locationId}) async {
+    if (_isLoadingMoreSales || !_hasMoreSales) return false;
+
+    _isLoadingMoreSales = true;
+    _salesPaginationError = null;
+    notifyListeners();
+
+    try {
+      final nextPage = await repository.getSales(
+        limit: _salesPageSize,
+        offset: _serverSalesOffset,
+        locationId: locationId,
+      );
+
+      if (nextPage.isEmpty) {
+        _hasMoreSales = false;
+      } else {
+        _serverSalesOffset += nextPage.length;
+        // Deduplicate against existing sales by id
+        final existingIds = _sales.map((s) => s.id).toSet();
+        final newSales =
+            nextPage.where((s) => !existingIds.contains(s.id)).toList();
+
+        if (nextPage.length < _salesPageSize) {
+          _hasMoreSales = false;
+        }
+        _sales.addAll(newSales);
+      }
+      _isLoadingMoreSales = false;
+      notifyListeners();
+      return true;
+    } catch (e) {
+      debugPrint('[INVENTORY] Failed to load more sales: $e');
+      _salesPaginationError = e.toString().replaceAll('Exception: ', '');
+      _isLoadingMoreSales = false;
+      notifyListeners();
+      return false;
+    }
+  }
+
+  /// Refreshes sales from page 0 and resets pagination flags
+  Future<void> refreshSales({String? locationId}) async {
+    _salesPaginationError = null;
+    _hasMoreSales = true;
+    try {
+      final freshSales = await repository.getSales(
+        limit: _salesPageSize,
+        offset: 0,
+        locationId: locationId,
+      );
+      _sales = List<Sale>.from(freshSales);
+      _serverSalesOffset = freshSales.length;
+      _hasMoreSales = freshSales.length >= _salesPageSize;
+      notifyListeners();
+    } catch (e) {
+      debugPrint('[INVENTORY] Failed to refresh sales: $e');
+      _salesPaginationError = e.toString().replaceAll('Exception: ', '');
+      notifyListeners();
     }
   }
 }

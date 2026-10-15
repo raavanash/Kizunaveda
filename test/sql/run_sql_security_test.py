@@ -21,7 +21,6 @@ Prerequisites:
 
 import sys
 import os
-import psycopg2
 
 def main():
     db_url = os.environ.get("DATABASE_URL")
@@ -35,6 +34,10 @@ def main():
         sys.exit(0)
 
     sql_file = os.path.join(os.path.dirname(__file__), "v1_6_pos_idempotency_and_security_tests.sql")
+    if len(sys.argv) > 2:
+        sql_file = sys.argv[2]
+        if not os.path.isabs(sql_file):
+            sql_file = os.path.join(os.getcwd(), sql_file)
     if not os.path.exists(sql_file):
         print(f"[!] Error: Test file not found at {sql_file}")
         sys.exit(1)
@@ -47,6 +50,12 @@ def main():
     print(f"Target: {db_url}")
     print(f"File:   {sql_file}")
     print("==================================================================")
+
+    try:
+        import psycopg2
+    except ImportError:
+        print("[!] Error: 'psycopg2' is required to connect to PostgreSQL. Install with: pip install psycopg2-binary")
+        sys.exit(1)
 
     try:
         conn = psycopg2.connect(db_url)

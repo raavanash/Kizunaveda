@@ -71,6 +71,54 @@ class _InTransitStockScreenState extends State<InTransitStockScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
+                    // Independent Stores Policy Banner
+                    Container(
+                      margin: const EdgeInsets.only(bottom: 16),
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: Colors.amber.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: Colors.amber.shade700.withValues(alpha: 0.3),
+                        ),
+                      ),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Icon(
+                            Icons.info_outline_rounded,
+                            color: Colors.amber.shade800,
+                            size: 22,
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Transfers Permanently Disabled',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 14,
+                                    color: Colors.amber.shade900,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  'Neemrana and Jaipur operate as completely independent retail stores. Inter-store dispatches and transfer receipts are permanently disabled. Manifests below are retained for compliance audit only.',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.brown.shade800,
+                                    height: 1.35,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+
                     // Overview Summary Card
                     KizunaCard(
                       padding: const EdgeInsets.all(20),
@@ -97,14 +145,14 @@ class _InTransitStockScreenState extends State<InTransitStockScreen> {
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     Text(
-                                      'Inter-Unit Transfer Control',
+                                      'Inter-Unit Transfer Control (Archived)',
                                       style: TextStyle(
                                         fontSize: 16,
                                         fontWeight: FontWeight.bold,
                                       ),
                                     ),
                                     Text(
-                                      'Monitor dispatches, receipts and discrepancies.',
+                                      'Historical dispatches, receipts and audit manifests.',
                                       style: TextStyle(
                                         fontSize: 12,
                                         color: AppColors.textSecondaryLight,

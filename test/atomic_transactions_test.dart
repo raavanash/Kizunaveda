@@ -29,44 +29,21 @@ void main() {
       expect(sale.isCompleted, isTrue);
     });
 
-    test('Confirm Jaipur receipt updates transfer atomically and validates bounds', () async {
-      final transfers = await repository.getTransfers();
-      final pending = transfers.firstWhere((t) => t.isPending);
-
-      final confirmed = await repository.confirmTransferReceipt(
-        transferId: pending.id,
-        receivedQuantity: pending.dispatchedQuantity,
+    test('Inter-store stock transfer operations are permanently disabled and fail closed', () async {
+      expect(
+        () => repository.createTransfer(
+          productId: 'prod-101',
+          dispatchedQuantity: 10,
+        ),
+        throwsA(isA<UnsupportedError>()),
       );
-
-      expect(confirmed.isReceived, isTrue);
-      expect(confirmed.receivedQuantity, pending.dispatchedQuantity);
-      expect(confirmed.discrepancyReason, isNull);
-    });
-
-    test('Receipt confirmation fails if received exceeds dispatched quantity', () async {
-      final transfers = await repository.getTransfers();
-      final pending = transfers.firstWhere((t) => t.isPending);
 
       expect(
         () => repository.confirmTransferReceipt(
-          transferId: pending.id,
-          receivedQuantity: pending.dispatchedQuantity + 999,
+          transferId: 'trans-1',
+          receivedQuantity: 10,
         ),
-        throwsA(isA<Exception>()),
-      );
-    });
-
-    test('Discrepancy reason required when received != dispatched', () async {
-      final transfers = await repository.getTransfers();
-      final pending = transfers.firstWhere((t) => t.isPending);
-
-      expect(
-        () => repository.confirmTransferReceipt(
-          transferId: pending.id,
-          receivedQuantity: pending.dispatchedQuantity - 1,
-          discrepancyReason: null,
-        ),
-        throwsA(isA<Exception>()),
+        throwsA(isA<UnsupportedError>()),
       );
     });
 

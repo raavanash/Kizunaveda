@@ -1,3 +1,4 @@
+import 'dart:convert';
 import '../../domain/entities/location.dart';
 import '../../domain/entities/packing_record.dart';
 import '../../domain/entities/product.dart';
@@ -11,12 +12,24 @@ import '../../domain/repositories/inventory_repository.dart';
 import '../../domain/entities/stock_in_record.dart';
 import '../../domain/entities/store_inventory.dart';
 import '../../domain/entities/stock_adjustment.dart';
+import '../../../sales/domain/entities/cart_item.dart';
 
 /// In-memory implementation of [IInventoryRepository] for testing and offline fallback.
 class UnconnectedInventoryRepository implements IInventoryRepository {
   final List<StockInRecord> _stockInRecords = [];
-  final Map<String, int> _storeStock = {}; // key: '$locationId:$productId'
+  final Map<String, int> _storeStock = {
+    // Independent Jaipur Store Inventory
+    '${Location.jaipurId}:prod-101': 50,
+    '${Location.jaipurId}:prod-102': 50,
+    '${Location.jaipurId}:prod-103': 0, // Chyawanprash has 0 initial stock at Jaipur
+    '${Location.jaipurId}:prod-104': 50,
+    '${Location.jaipurId}:prod-105': 25,
+    '${Location.jaipurId}:prod-106': 25,
+    '${Location.jaipurId}:prod-107': 25,
+  };
   final List<StockAdjustment> _stockAdjustments = [];
+  final Map<String, Sale> _salesByRequestId = {};
+  final Map<String, String> _payloadHashByRequestId = {};
   final List<Location> _locations = [
     Location(
       id: Location.neemranaId,
@@ -66,6 +79,46 @@ class UnconnectedInventoryRepository implements IInventoryRepository {
       standardSellingPrice: 200.0,
       purchaseCost: 90.0,
       createdAt: DateTime.now().subtract(const Duration(days: 5)),
+    ),
+    Product(
+      id: 'prod-104',
+      name: 'Tulsi Ark',
+      packageSize: '50ml',
+      sku: 'KV-TUL-050',
+      active: true,
+      standardSellingPrice: 100.0,
+      purchaseCost: 45.0,
+      createdAt: DateTime.now().subtract(const Duration(days: 3)),
+    ),
+    Product(
+      id: 'prod-105',
+      name: 'Almonds / Badam',
+      packageSize: '250g',
+      sku: 'KV-ALM-250',
+      active: true,
+      standardSellingPrice: 300.0,
+      purchaseCost: 180.0,
+      createdAt: DateTime.now().subtract(const Duration(days: 2)),
+    ),
+    Product(
+      id: 'prod-106',
+      name: 'Kaju / Cashews',
+      packageSize: '250g',
+      sku: 'KV-KAJ-250',
+      active: true,
+      standardSellingPrice: 350.0,
+      purchaseCost: 210.0,
+      createdAt: DateTime.now().subtract(const Duration(days: 2)),
+    ),
+    Product(
+      id: 'prod-107',
+      name: 'Raisins / Kishmish',
+      packageSize: '250g',
+      sku: 'KV-RAI-250',
+      active: true,
+      standardSellingPrice: 180.0,
+      purchaseCost: 95.0,
+      createdAt: DateTime.now().subtract(const Duration(days: 2)),
     ),
   ];
 
@@ -122,6 +175,41 @@ class UnconnectedInventoryRepository implements IInventoryRepository {
       packedAt: DateTime.now().subtract(const Duration(days: 3)),
       createdAt: DateTime.now().subtract(const Duration(days: 3)),
     ),
+    PackingRecord(
+      id: 'pack-3',
+      locationId: Location.neemranaId,
+      productId: 'prod-104',
+      rawMaterialId: 'raw-101',
+      rawMaterialConsumed: 20.0,
+      packedQuantity: 200,
+      wastageQuantity: 0.2,
+      packedAt: DateTime.now().subtract(const Duration(days: 2)),
+      createdAt: DateTime.now().subtract(const Duration(days: 2)),
+    ),
+    PackingRecord(
+      id: 'pack-4',
+      locationId: Location.neemranaId,
+      productId: 'prod-105',
+      packedQuantity: 100,
+      packedAt: DateTime.now().subtract(const Duration(days: 2)),
+      createdAt: DateTime.now().subtract(const Duration(days: 2)),
+    ),
+    PackingRecord(
+      id: 'pack-5',
+      locationId: Location.neemranaId,
+      productId: 'prod-106',
+      packedQuantity: 100,
+      packedAt: DateTime.now().subtract(const Duration(days: 2)),
+      createdAt: DateTime.now().subtract(const Duration(days: 2)),
+    ),
+    PackingRecord(
+      id: 'pack-6',
+      locationId: Location.neemranaId,
+      productId: 'prod-107',
+      packedQuantity: 100,
+      packedAt: DateTime.now().subtract(const Duration(days: 2)),
+      createdAt: DateTime.now().subtract(const Duration(days: 2)),
+    ),
   ];
 
   final List<StockTransfer> _transfers = [
@@ -148,6 +236,54 @@ class UnconnectedInventoryRepository implements IInventoryRepository {
       receivedAt: null,
       discrepancyReason: null,
       createdAt: DateTime.now().subtract(const Duration(days: 1)),
+    ),
+    StockTransfer(
+      id: 'trans-3',
+      productId: 'prod-104',
+      fromLocationId: Location.neemranaId,
+      toLocationId: Location.jaipurId,
+      dispatchedQuantity: 100,
+      receivedQuantity: 100,
+      dispatchedAt: DateTime.now().subtract(const Duration(days: 2)),
+      receivedAt: DateTime.now().subtract(const Duration(days: 1)),
+      discrepancyReason: null,
+      createdAt: DateTime.now().subtract(const Duration(days: 2)),
+    ),
+    StockTransfer(
+      id: 'trans-4',
+      productId: 'prod-105',
+      fromLocationId: Location.neemranaId,
+      toLocationId: Location.jaipurId,
+      dispatchedQuantity: 50,
+      receivedQuantity: 50,
+      dispatchedAt: DateTime.now().subtract(const Duration(days: 2)),
+      receivedAt: DateTime.now().subtract(const Duration(days: 1)),
+      discrepancyReason: null,
+      createdAt: DateTime.now().subtract(const Duration(days: 2)),
+    ),
+    StockTransfer(
+      id: 'trans-5',
+      productId: 'prod-106',
+      fromLocationId: Location.neemranaId,
+      toLocationId: Location.jaipurId,
+      dispatchedQuantity: 50,
+      receivedQuantity: 50,
+      dispatchedAt: DateTime.now().subtract(const Duration(days: 2)),
+      receivedAt: DateTime.now().subtract(const Duration(days: 1)),
+      discrepancyReason: null,
+      createdAt: DateTime.now().subtract(const Duration(days: 2)),
+    ),
+    StockTransfer(
+      id: 'trans-6',
+      productId: 'prod-107',
+      fromLocationId: Location.neemranaId,
+      toLocationId: Location.jaipurId,
+      dispatchedQuantity: 50,
+      receivedQuantity: 50,
+      dispatchedAt: DateTime.now().subtract(const Duration(days: 2)),
+      receivedAt: DateTime.now().subtract(const Duration(days: 1)),
+      discrepancyReason: null,
+      createdAt: DateTime.now().subtract(const Duration(days: 2)),
     ),
   ];
 
@@ -179,7 +315,7 @@ class UnconnectedInventoryRepository implements IInventoryRepository {
 
   @override
   Future<List<Product>> getProducts() async {
-    return List.unmodifiable(_products.where((p) => p.active));
+    return List.unmodifiable(_products);
   }
 
   @override
@@ -187,22 +323,89 @@ class UnconnectedInventoryRepository implements IInventoryRepository {
     required String name,
     required String packageSize,
     required String sku,
+    double? standardSellingPrice,
+    double? purchaseCost,
+    bool active = true,
   }) async {
+    final cleanName = name.trim();
+    if (cleanName.isEmpty) throw Exception('Product name cannot be empty.');
+    final cleanSize = packageSize.trim();
+    if (cleanSize.isEmpty) throw Exception('Package size cannot be empty.');
     final trimmedSku = sku.trim().toUpperCase();
+    if (trimmedSku.isEmpty) throw Exception('Product SKU cannot be empty.');
+
+    if (standardSellingPrice != null && standardSellingPrice < 0) {
+      throw Exception('Standard selling price cannot be negative.');
+    }
+    if (purchaseCost != null && purchaseCost < 0) {
+      throw Exception('Purchase cost cannot be negative.');
+    }
+
     if (_products.any((p) => p.sku.toUpperCase() == trimmedSku)) {
       throw Exception('Product with SKU "$trimmedSku" already exists.');
     }
 
     final product = Product(
       id: _generateId('prod'),
-      name: name.trim(),
-      packageSize: packageSize.trim(),
+      name: cleanName,
+      packageSize: cleanSize,
       sku: trimmedSku,
-      active: true,
+      standardSellingPrice: standardSellingPrice ?? Product.defaultPriceForSku(trimmedSku),
+      purchaseCost: purchaseCost ?? Product.defaultCostForSku(trimmedSku),
+      active: active,
       createdAt: DateTime.now(),
     );
     _products.add(product);
     return product;
+  }
+
+  @override
+  Future<Product> updateProduct({
+    required String id,
+    String? name,
+    String? packageSize,
+    String? sku,
+    double? standardSellingPrice,
+    double? purchaseCost,
+    bool? active,
+  }) async {
+    final index = _products.indexWhere((p) => p.id == id);
+    if (index == -1) {
+      throw Exception('Product with ID "$id" not found.');
+    }
+    final existing = _products[index];
+
+    if (name != null && name.trim().isEmpty) {
+      throw Exception('Product name cannot be empty.');
+    }
+    if (packageSize != null && packageSize.trim().isEmpty) {
+      throw Exception('Package size cannot be empty.');
+    }
+    String? cleanSku;
+    if (sku != null) {
+      cleanSku = sku.trim().toUpperCase();
+      if (cleanSku.isEmpty) throw Exception('Product SKU cannot be empty.');
+      if (_products.any((p) => p.id != id && p.sku.toUpperCase() == cleanSku)) {
+        throw Exception('Product with SKU "$cleanSku" already exists.');
+      }
+    }
+    if (standardSellingPrice != null && standardSellingPrice < 0) {
+      throw Exception('Standard selling price cannot be negative.');
+    }
+    if (purchaseCost != null && purchaseCost < 0) {
+      throw Exception('Purchase cost cannot be negative.');
+    }
+
+    final updated = existing.copyWith(
+      name: name?.trim(),
+      packageSize: packageSize?.trim(),
+      sku: cleanSku,
+      standardSellingPrice: standardSellingPrice,
+      purchaseCost: purchaseCost,
+      active: active,
+    );
+    _products[index] = updated;
+    return updated;
   }
 
   @override
@@ -382,6 +585,49 @@ class UnconnectedInventoryRepository implements IInventoryRepository {
   }
 
   @override
+  Future<StockAdjustment> receiveStoreStock({
+    required String locationId,
+    required String productId,
+    required int quantity,
+    String? notes,
+  }) async {
+    if (quantity <= 0) {
+      throw Exception('Received stock quantity must be greater than zero.');
+    }
+    final stockKey = '$locationId:$productId';
+    final int prevQty;
+    if (_storeStock.containsKey(stockKey)) {
+      prevQty = _storeStock[stockKey]!;
+    } else {
+      final summaries = await getInventorySummaries();
+      final match = summaries.where((s) => s.product.id == productId);
+      if (match.isNotEmpty) {
+        prevQty = locationId == Location.neemranaId
+            ? match.first.neemranaFinishedStock
+            : match.first.jaipurFinishedStock;
+      } else {
+        prevQty = 0;
+      }
+    }
+    final newQty = prevQty + quantity;
+    _storeStock[stockKey] = newQty;
+
+    final adj = StockAdjustment(
+      id: _generateId('adj'),
+      locationId: locationId,
+      productId: productId,
+      previousQuantity: prevQty,
+      newQuantity: newQty,
+      changeQuantity: quantity,
+      reason: 'STOCK_RECEIPT',
+      notes: notes ?? 'Stock received into store',
+      createdAt: DateTime.now(),
+    );
+    _stockAdjustments.insert(0, adj);
+    return adj;
+  }
+
+  @override
   Future<List<StockAdjustment>> getStockAdjustments({String? locationId}) async {
     if (locationId == null) {
       return List.unmodifiable(_stockAdjustments);
@@ -403,20 +649,10 @@ class UnconnectedInventoryRepository implements IInventoryRepository {
     String? toLocationId,
     DateTime? dispatchedAt,
   }) async {
-    final transfer = StockTransfer(
-      id: _generateId('trans'),
-      productId: productId,
-      fromLocationId: fromLocationId ?? Location.neemranaId,
-      toLocationId: toLocationId ?? Location.jaipurId,
-      dispatchedQuantity: dispatchedQuantity,
-      receivedQuantity: null,
-      dispatchedAt: dispatchedAt ?? DateTime.now(),
-      receivedAt: null,
-      discrepancyReason: null,
-      createdAt: DateTime.now(),
+    throw UnsupportedError(
+      'Inter-store stock transfers are permanently disabled: '
+      'Neemrana and Jaipur operate as independent retail stores.',
     );
-    _transfers.add(transfer);
-    return transfer;
   }
 
   @override
@@ -426,37 +662,48 @@ class UnconnectedInventoryRepository implements IInventoryRepository {
     String? discrepancyReason,
     DateTime? receivedAt,
   }) async {
-    final index = _transfers.indexWhere((t) => t.id == transferId);
-    if (index == -1) {
-      throw Exception('Transfer with ID "$transferId" not found.');
-    }
-    final existing = _transfers[index];
-    if (receivedQuantity > existing.dispatchedQuantity) {
-      throw Exception('Received quantity ($receivedQuantity) cannot exceed dispatched quantity (${existing.dispatchedQuantity}).');
-    }
-    if (receivedQuantity != existing.dispatchedQuantity &&
-        (discrepancyReason == null || discrepancyReason.trim().isEmpty)) {
-      throw Exception('Discrepancy reason is required when received quantity differs from dispatched quantity.');
-    }
-
-    final updated = existing.copyWith(
-      receivedQuantity: receivedQuantity,
-      receivedAt: receivedAt ?? DateTime.now(),
-      discrepancyReason: discrepancyReason?.trim(),
+    throw UnsupportedError(
+      'Inter-store stock transfers are permanently disabled: '
+      'Neemrana and Jaipur operate as independent retail stores.',
     );
-    _transfers[index] = updated;
-    return updated;
   }
 
   @override
-  Future<List<Sale>> getSales() async {
-    return List.unmodifiable(_sales);
+  Future<List<Sale>> getSales({
+    int limit = 50,
+    int offset = 0,
+    String? locationId,
+  }) async {
+    final sorted = List<Sale>.from(_sales)
+      ..sort((a, b) => b.soldAt.compareTo(a.soldAt));
+
+    final filtered = (locationId != null && locationId.isNotEmpty)
+        ? sorted.where((s) => s.locationId == locationId).toList()
+        : sorted;
+
+    if (offset >= filtered.length) {
+      return [];
+    }
+    final end =
+        (offset + limit < filtered.length) ? offset + limit : filtered.length;
+    return filtered.sublist(offset, end);
+  }
+
+  /// Test helper to simulate a legacy sale row with client_request_id but NULL payload hash.
+  void seedLegacySaleWithNullHash({
+    required String requestId,
+    required Sale sale,
+  }) {
+    _salesByRequestId[requestId] = sale;
+    _payloadHashByRequestId.remove(requestId);
   }
 
   @override
   Future<Sale> recordSale({
-    required String productId,
-    required int quantity,
+    String? productId,
+    int? quantity,
+    List<CartItem>? items,
+    String? clientRequestId,
     String? customerName,
     String? customerPhone,
     String paymentMethod = 'CASH',
@@ -471,53 +718,208 @@ class UnconnectedInventoryRepository implements IInventoryRepository {
     double? unitPrice,
     double discount = 0.0,
     DateTime? soldAt,
+    String? callerRole,
   }) async {
-    if (quantity <= 0) {
-      throw Exception('Quantity must be greater than zero.');
-    }
     final cleanMethod = paymentMethod.trim().toUpperCase();
     if (cleanMethod != 'CASH' && cleanMethod != 'UPI') {
-      throw Exception('Invalid payment method "$paymentMethod". Allowed values: CASH, UPI.');
+      throw Exception(
+          'Invalid payment method "$paymentMethod". Allowed values: CASH, UPI.');
     }
     final targetLocationId = locationId ?? Location.jaipurId;
-    final calcTaxable = taxableAmount ?? (invoiceType == 'GST' ? (totalAmount / (1 + (gstRate / 100.0))) : totalAmount);
 
-    final product = _products.firstWhere(
-      (p) => p.id == productId,
-      orElse: () => Product(
-        id: productId,
-        name: 'Product',
-        packageSize: 'Standard',
-        sku: 'KV-ITEM',
-        createdAt: DateTime.now(),
-      ),
-    );
+    if (quantity != null && quantity <= 0) {
+      throw Exception('Quantity must be greater than zero.');
+    }
 
-    final effectiveUnitPrice = unitPrice ??
-        (totalAmount > 0 && quantity > 0
-            ? (totalAmount / quantity)
-            : product.standardSellingPrice);
+    // Build line items list
+    final List<Map<String, dynamic>> itemsPayload;
+    if (items != null && items.isNotEmpty) {
+      for (final item in items) {
+        if (item.quantity <= 0) {
+          throw Exception('Quantity must be greater than zero.');
+        }
+      }
+      itemsPayload = items.map((i) => i.toRpcItemJson()).toList();
+    } else if (productId != null && quantity != null && quantity > 0) {
+      final effectiveUnitPrice = unitPrice ??
+          (totalAmount > 0 ? (totalAmount / quantity) : 100.0);
+      itemsPayload = [
+        {
+          'product_id': productId,
+          'quantity': quantity,
+          'unit_price': effectiveUnitPrice,
+          'discount': discount,
+        }
+      ];
+    } else {
+      throw Exception('Either items or valid productId and quantity must be provided.');
+    }
 
-    final calculatedTotal = totalAmount > 0
-        ? totalAmount
-        : ((quantity * effectiveUnitPrice) - discount);
+    // Server-side Idempotency Verification
+    if (clientRequestId != null && clientRequestId.isNotEmpty) {
+      // Build normalized line items list sorted deterministically
+      final sortedItems = List<Map<String, dynamic>>.from(itemsPayload)
+        ..sort((a, b) {
+          final cmpPid = (a['product_id'] as String).compareTo(b['product_id'] as String);
+          if (cmpPid != 0) return cmpPid;
+          final cmpQty = ((a['quantity'] as num).toInt()).compareTo((b['quantity'] as num).toInt());
+          if (cmpQty != 0) return cmpQty;
+          final cmpPrice = ((a['unit_price'] as num).toDouble()).compareTo((b['unit_price'] as num).toDouble());
+          if (cmpPrice != 0) return cmpPrice;
+          return (((a['discount'] ?? 0) as num).toDouble()).compareTo(((b['discount'] ?? 0) as num).toDouble());
+        });
+
+      final canonicalPayload = jsonEncode({
+        'canonical_version': 1,
+        'customer_name': customerName?.trim(),
+        'customer_phone': customerPhone?.trim(),
+        'invoice_type': invoiceType.trim().toUpperCase(),
+        'items': sortedItems.map((i) => {
+          'discount': double.parse(((i['discount'] ?? 0) as num).toDouble().toStringAsFixed(2)),
+          'product_id': i['product_id'],
+          'quantity': (i['quantity'] as num).toInt(),
+          'unit_price': double.parse(((i['unit_price'] ?? 0) as num).toDouble().toStringAsFixed(2)),
+        }).toList(),
+        'location_id': targetLocationId,
+        'payment_method': cleanMethod,
+      });
+
+      if (_salesByRequestId.containsKey(clientRequestId)) {
+        final existingHash = _payloadHashByRequestId[clientRequestId];
+        if (existingHash == null) {
+          throw Exception(
+              'Idempotency conflict: Client request ID $clientRequestId exists on a legacy record without a verified payload hash. Request cannot be safely replayed.');
+        } else if (existingHash != canonicalPayload) {
+          throw Exception(
+              'Idempotency conflict: client_request_id $clientRequestId was already used with a different request payload.');
+        }
+        // Return existing committed sale without decrementing stock a second time
+        return _salesByRequestId[clientRequestId]!;
+      }
+      _payloadHashByRequestId[clientRequestId] = canonicalPayload;
+    }
 
     final saleId = _generateId('sale');
-    final saleItem = SaleItem(
-      id: _generateId('sale_item'),
-      saleId: saleId,
-      productId: productId,
-      quantity: quantity,
-      unitPrice: effectiveUnitPrice,
-      discount: discount,
-      unitCost: product.purchaseCost > 0 ? product.purchaseCost : null,
-      createdAt: soldAt ?? DateTime.now(),
-    );
+    final List<SaleItem> saleItems = [];
+    double calculatedTotal = 0.0;
 
+    // 1. Validate inputs and calculate totals
+    for (final itemMap in itemsPayload) {
+      final pId = itemMap['product_id'] as String;
+      final q = (itemMap['quantity'] as num).toInt();
+      final up = (itemMap['unit_price'] as num).toDouble();
+      final d = (itemMap['discount'] as num?)?.toDouble() ?? 0.0;
+
+      if (!q.isFinite || q.isNaN || q <= 0) {
+        throw Exception('Quantity must be greater than zero.');
+      }
+      if (!up.isFinite || up.isNaN || up <= 0) {
+        throw Exception('Unit price must be greater than zero.');
+      }
+      if (!d.isFinite || d.isNaN || d < 0) {
+        throw Exception('Discount cannot be negative.');
+      }
+      if (d > (q * up)) {
+        throw Exception('Discount cannot exceed line item total.');
+      }
+
+      final product = _products.firstWhere(
+        (p) => p.id == pId,
+        orElse: () => Product(
+          id: pId,
+          name: 'Product',
+          packageSize: 'Standard',
+          sku: 'KV-ITEM',
+          createdAt: DateTime.now(),
+        ),
+      );
+
+      // Cashier role boundary enforcement: 10% maximum discount ceiling and no price modification
+      if (callerRole == 'neemrana' || callerRole == 'jaipur') {
+        if ((up - product.standardSellingPrice).abs() > 0.001) {
+          throw Exception(
+              'Unauthorized price modification: Cashier role "$callerRole" cannot modify catalog price (Catalog: ${product.standardSellingPrice}, Provided: $up). Owner authorization required.');
+        }
+
+        final itemGross = q * product.standardSellingPrice;
+        if (d > 0 && itemGross > 0) {
+          final pct = double.parse(((d / itemGross) * 100.0).toStringAsFixed(4));
+          if (pct > 10.00) {
+            throw Exception(
+                'Unauthorized discount: Cashier discount ($pct pct) exceeds allowed maximum of 10.0 pct. Owner authorization required.');
+          }
+        }
+      }
+
+      final lineTotal = (q * up) - d;
+      calculatedTotal += lineTotal;
+
+      saleItems.add(SaleItem(
+        id: _generateId('sale_item'),
+        saleId: saleId,
+        productId: pId,
+        quantity: q,
+        unitPrice: up,
+        discount: d,
+        unitCost: product.purchaseCost > 0 ? product.purchaseCost : null,
+        createdAt: soldAt ?? DateTime.now(),
+        productName: product.name,
+        sku: product.sku,
+        packageSize: product.packageSize,
+      ));
+    }
+
+    // 2. Pre-validate stock availability for all products (atomic check supporting duplicate lines)
+    final Map<String, int> totalRequiredByProduct = {};
+    for (final itemMap in itemsPayload) {
+      final pId = itemMap['product_id'] as String;
+      final q = (itemMap['quantity'] as num).toInt();
+      totalRequiredByProduct[pId] = (totalRequiredByProduct[pId] ?? 0) + q;
+    }
+
+    final summaries = await getInventorySummaries();
+    for (final entry in totalRequiredByProduct.entries) {
+      final pId = entry.key;
+      final totalReq = entry.value;
+      final stockKey = '$targetLocationId:$pId';
+      final int current;
+      if (_storeStock.containsKey(stockKey)) {
+        current = _storeStock[stockKey]!;
+      } else {
+        final match = summaries.where((s) => s.product.id == pId);
+        current = match.isNotEmpty
+            ? (targetLocationId == Location.neemranaId
+                ? match.first.neemranaFinishedStock
+                : match.first.jaipurFinishedStock)
+            : 0;
+        _storeStock[stockKey] = current;
+      }
+      if (totalReq > current) {
+        throw Exception(
+            'Insufficient stock for product ID $pId at $targetLocationId. Available: $current, Requested: $totalReq.');
+      }
+    }
+
+    // 3. Atomically deduct stock only after all items and constraints are verified
+    for (final entry in totalRequiredByProduct.entries) {
+      final pId = entry.key;
+      final totalReq = entry.value;
+      final stockKey = '$targetLocationId:$pId';
+      _storeStock[stockKey] = (_storeStock[stockKey] ?? 0) - totalReq;
+    }
+
+    final effectiveTotal = totalAmount > 0 ? totalAmount : calculatedTotal;
+    final calcTaxable = taxableAmount ??
+        (invoiceType == 'GST'
+            ? (effectiveTotal / (1 + (gstRate / 100.0)))
+            : effectiveTotal);
+
+    final firstItem = saleItems.first;
     final sale = Sale(
       id: saleId,
       locationId: targetLocationId,
-      billNumber: 'BILL-${DateTime.now().millisecondsSinceEpoch.toString().substring(5)}',
+      billNumber:
+          'BILL-${DateTime.now().millisecondsSinceEpoch.toString().substring(5)}',
       customerName: customerName?.trim(),
       customerPhone: customerPhone?.trim(),
       paymentMethod: cleanMethod,
@@ -528,24 +930,18 @@ class UnconnectedInventoryRepository implements IInventoryRepository {
       sgstAmount: sgstAmount,
       igstAmount: igstAmount,
       whatsappStatus: 'NOT_SENT',
-      totalAmount: calculatedTotal,
-      productId: productId,
-      quantity: quantity,
-      items: [saleItem],
+      totalAmount: effectiveTotal,
+      productId: firstItem.productId,
+      quantity: saleItems.fold<int>(0, (sum, i) => sum + i.quantity),
+      items: saleItems,
       soldAt: soldAt ?? DateTime.now(),
       createdAt: DateTime.now(),
     );
 
-    final stockKey = '$targetLocationId:$productId';
-    if (_storeStock.containsKey(stockKey)) {
-      final current = _storeStock[stockKey]!;
-      if (quantity > current) {
-        throw Exception('Insufficient stock. Requested: $quantity, Available: $current.');
-      }
-      _storeStock[stockKey] = current - quantity;
-    }
-
     _sales.add(sale);
+    if (clientRequestId != null && clientRequestId.isNotEmpty) {
+      _salesByRequestId[clientRequestId] = sale;
+    }
     return sale;
   }
 
@@ -560,9 +956,18 @@ class UnconnectedInventoryRepository implements IInventoryRepository {
       throw Exception('Sale is already voided.');
     }
 
-    final stockKey = '${existing.locationId}:${existing.productId}';
-    if (_storeStock.containsKey(stockKey)) {
-      _storeStock[stockKey] = _storeStock[stockKey]! + existing.quantity;
+    if (existing.items.isNotEmpty) {
+      for (final item in existing.items) {
+        final stockKey = '${existing.locationId}:${item.productId}';
+        if (_storeStock.containsKey(stockKey)) {
+          _storeStock[stockKey] = _storeStock[stockKey]! + item.quantity;
+        }
+      }
+    } else {
+      final stockKey = '${existing.locationId}:${existing.productId}';
+      if (_storeStock.containsKey(stockKey)) {
+        _storeStock[stockKey] = _storeStock[stockKey]! + existing.quantity;
+      }
     }
 
     final updated = existing.copyWith(status: 'VOIDED');
@@ -584,13 +989,9 @@ class UnconnectedInventoryRepository implements IInventoryRepository {
           .where((s) => s.productId == product.id && s.locationId == Location.neemranaId)
           .fold(0, (sum, item) => sum + item.quantity);
 
-      final totalDispatched = _transfers
-          .where((t) => t.productId == product.id)
-          .fold(0, (sum, item) => sum + item.dispatchedQuantity);
-
-      final totalReceived = _transfers
-          .where((t) => t.productId == product.id && t.receivedQuantity != null)
-          .fold(0, (sum, item) => sum + (item.receivedQuantity ?? 0));
+      // Inter-store transfers are permanently disabled: stock is never transferred
+      const totalDispatched = 0;
+      const totalReceived = 0;
 
       final totalJaipurStockIn = _stockInRecords
           .where((s) => s.productId == product.id && s.locationId == Location.jaipurId)

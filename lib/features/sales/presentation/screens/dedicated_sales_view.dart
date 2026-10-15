@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../../../app/providers/inventory_provider.dart';
+import '../../../inventory/presentation/controllers/inventory_notifier.dart';
 import '../../../../app/theme/app_colors.dart';
 import '../../../../core/constants/app_constants.dart';
 import '../../../../core/services/pdf_invoice_service.dart';
@@ -30,6 +31,7 @@ class DedicatedSalesView extends StatefulWidget {
 
 class _DedicatedSalesViewState extends State<DedicatedSalesView> {
   final TextEditingController _searchCtrl = TextEditingController();
+  final ScrollController _scrollController = ScrollController();
   OutletFilter _selectedOutlet = OutletFilter.all;
   DateRangePreset _selectedDatePreset = DateRangePreset.allTime;
   String _selectedStatus = 'ALL'; // ALL, COMPLETED, VOIDED
@@ -42,10 +44,39 @@ class _DedicatedSalesViewState extends State<DedicatedSalesView> {
     } else if (widget.role == UserRole.neemrana) {
       _selectedOutlet = OutletFilter.neemrana;
     }
+    _scrollController.addListener(_onScroll);
+  }
+
+  void _onScroll() {
+    if (_scrollController.hasClients &&
+        _scrollController.position.pixels >=
+            _scrollController.position.maxScrollExtent - 200) {
+      final notifier = InventoryProvider.maybeOf(context);
+      if (notifier != null &&
+          notifier.hasMoreSales &&
+          !notifier.isLoadingMoreSales) {
+        notifier.loadMoreSales(locationId: _effectiveLocationId());
+      }
+    }
+  }
+
+  String? _effectiveLocationId({OutletFilter? outlet}) {
+    if (widget.role == UserRole.neemrana) return LocationConstants.neemranaId;
+    if (widget.role == UserRole.jaipur) return LocationConstants.jaipurId;
+    final currentOutlet = outlet ?? _selectedOutlet;
+    if (currentOutlet == OutletFilter.neemrana) {
+      return LocationConstants.neemranaId;
+    }
+    if (currentOutlet == OutletFilter.jaipur) {
+      return LocationConstants.jaipurId;
+    }
+    return null;
   }
 
   @override
   void dispose() {
+    _scrollController.removeListener(_onScroll);
+    _scrollController.dispose();
     _searchCtrl.dispose();
     super.dispose();
   }
@@ -225,6 +256,11 @@ class _DedicatedSalesViewState extends State<DedicatedSalesView> {
                             onChanged: (val) {
                               if (val != null) {
                                 setState(() => _selectedOutlet = val);
+                                final notifier =
+                                    InventoryProvider.maybeOf(context);
+                                notifier?.refreshSales(
+                                  locationId: _effectiveLocationId(outlet: val),
+                                );
                               }
                             },
                           ),
@@ -270,15 +306,23 @@ class _DedicatedSalesViewState extends State<DedicatedSalesView> {
                   : filteredSales.isEmpty
                       ? _buildEmptyState()
                       : RefreshIndicator(
-                          onRefresh: () async =>
-                              notifier?.loadInventoryData(),
+                          onRefresh: () async => notifier?.refreshSales(
+                            locationId: _effectiveLocationId(),
+                          ),
                           child: ListView.separated(
+                            controller: _scrollController,
                             padding: const EdgeInsets.all(12),
-                            itemCount: filteredSales.length,
+                            itemCount: filteredSales.length +
+                                (notifier != null ? 1 : 0),
                             separatorBuilder: (_, _) =>
                                 const SizedBox(height: 8),
-                            itemBuilder: (ctx, idx) =>
-                                _buildBillCard(filteredSales[idx]),
+                            itemBuilder: (ctx, idx) {
+                              if (idx == filteredSales.length) {
+                                return _buildPaginationFooter(
+                                    notifier!, filteredSales.length);
+                              }
+                              return _buildBillCard(filteredSales[idx]);
+                            },
                           ),
                         ),
             ),
@@ -319,6 +363,10 @@ class _DedicatedSalesViewState extends State<DedicatedSalesView> {
   }
 
   Widget _buildEmptyState() {
+    final notifier = InventoryProvider.maybeOf(context);
+    final hasMore = notifier?.hasMoreSales ?? false;
+    final isLoadingMore = notifier?.isLoadingMoreSales ?? false;
+
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(32),
@@ -339,6 +387,29 @@ class _DedicatedSalesViewState extends State<DedicatedSalesView> {
               style: TextStyle(color: Colors.grey.shade600, fontSize: 13),
             ),
             const SizedBox(height: 20),
+            if (hasMore) ...[
+              OutlinedButton.icon(
+                key: const Key('empty_state_load_more_btn'),
+                onPressed: isLoadingMore
+                    ? null
+                    : () => notifier?.loadMoreSales(
+                          locationId: _effectiveLocationId(),
+                        ),
+                icon: isLoadingMore
+                    ? const SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.arrow_downward, size: 16),
+                label: Text(
+                  isLoadingMore
+                      ? 'Searching older bills...'
+                      : 'Load Older Bills',
+                ),
+              ),
+              const SizedBox(height: 12),
+            ],
             ElevatedButton.icon(
               style: ElevatedButton.styleFrom(
                 backgroundColor: AppColors.primary,
@@ -351,6 +422,99 @@ class _DedicatedSalesViewState extends State<DedicatedSalesView> {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildPaginationFooter(
+      InventoryNotifier notifier, int displayedCount) {
+    if (notifier.isLoadingMoreSales) {
+      return Container(
+        key: const Key('sales_pagination_loading'),
+        padding: const EdgeInsets.symmetric(vertical: 16),
+        alignment: Alignment.center,
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+            const SizedBox(width: 12),
+            Text(
+              'Loading older bills...',
+              style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
+            ),
+          ],
+        ),
+      );
+    }
+
+    if (notifier.salesPaginationError != null) {
+      return Container(
+        key: const Key('sales_pagination_error'),
+        padding: const EdgeInsets.all(12),
+        margin: const EdgeInsets.symmetric(vertical: 8),
+        decoration: BoxDecoration(
+          color: Colors.red.shade50,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: Colors.red.shade200),
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.error_outline, size: 20, color: Colors.red.shade700),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'Failed to load more bills: ${notifier.salesPaginationError}',
+                style: TextStyle(fontSize: 12, color: Colors.red.shade900),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            TextButton.icon(
+              key: const Key('sales_pagination_retry_btn'),
+              icon: const Icon(Icons.refresh, size: 16),
+              label: const Text('Retry'),
+              onPressed: () =>
+                  notifier.loadMoreSales(locationId: _effectiveLocationId()),
+            ),
+          ],
+        ),
+      );
+    }
+
+    if (!notifier.hasMoreSales) {
+      return Container(
+        key: const Key('sales_pagination_end'),
+        padding: const EdgeInsets.symmetric(vertical: 16),
+        alignment: Alignment.center,
+        child: Text(
+          'All records loaded ($displayedCount bills shown)',
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w500,
+            color: Colors.grey.shade500,
+          ),
+        ),
+      );
+    }
+
+    return Container(
+      key: const Key('sales_load_more_btn_container'),
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      alignment: Alignment.center,
+      child: OutlinedButton.icon(
+        key: const Key('sales_load_more_btn'),
+        icon: const Icon(Icons.arrow_downward, size: 16),
+        label: const Text('Load More Bills'),
+        style: OutlinedButton.styleFrom(
+          visualDensity: VisualDensity.compact,
+          textStyle: const TextStyle(fontSize: 12),
+        ),
+        onPressed: () =>
+            notifier.loadMoreSales(locationId: _effectiveLocationId()),
       ),
     );
   }

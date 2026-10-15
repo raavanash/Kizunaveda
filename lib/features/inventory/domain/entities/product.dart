@@ -37,6 +37,42 @@ class Product {
     return 0.0;
   }
 
+  /// Calculate readable total weight/volume for a given packet quantity
+  String calculateTotalWeight(int quantity) {
+    if (quantity <= 0) return '0 pkts';
+    final clean = packageSize.trim().toLowerCase();
+    final match = RegExp(r'^(\d+(?:\.\d+)?)\s*([a-zA-Z]+)$').firstMatch(clean);
+    if (match != null) {
+      final value = double.tryParse(match.group(1)!) ?? 0;
+      final unit = match.group(2)!;
+      final totalVal = value * quantity;
+      if (unit == 'g') {
+        if (totalVal >= 1000) {
+          final kg = totalVal / 1000;
+          final kgStr = kg % 1 == 0 ? kg.toInt().toString() : kg.toStringAsFixed(2);
+          final gStr = totalVal % 1 == 0 ? totalVal.toInt().toString() : totalVal.toStringAsFixed(1);
+          return '$gStr g ($kgStr kg)';
+        }
+        final gStr = totalVal % 1 == 0 ? totalVal.toInt().toString() : totalVal.toStringAsFixed(1);
+        return '$gStr g';
+      } else if (unit == 'kg') {
+        final kgStr = totalVal % 1 == 0 ? totalVal.toInt().toString() : totalVal.toStringAsFixed(2);
+        return '$kgStr kg';
+      } else if (unit == 'ml') {
+        if (totalVal >= 1000) {
+          final l = totalVal / 1000;
+          final lStr = l % 1 == 0 ? l.toInt().toString() : l.toStringAsFixed(2);
+          return '${totalVal.toInt()} ml ($lStr L)';
+        }
+        return '${totalVal.toInt()} ml';
+      } else if (unit == 'l') {
+        final lStr = totalVal % 1 == 0 ? totalVal.toInt().toString() : totalVal.toStringAsFixed(2);
+        return '$lStr L';
+      }
+    }
+    return '$quantity × $packageSize';
+  }
+
   Map<String, dynamic> toJson() {
     return {
       'id': id,
@@ -60,12 +96,22 @@ class Product {
         ? (rawPrice as num).toDouble()
         : defaultPriceForSku(skuStr);
 
-    final rawCost = json['purchase_cost'] ??
-        json['purchaseCost'] ??
-        json['cost'];
-    final cost = rawCost != null
-        ? (rawCost as num).toDouble()
-        : defaultCostForSku(skuStr);
+    final rawProcurement = json['product_procurement_costs'];
+    final double? procurementCost = rawProcurement is Map
+        ? (rawProcurement['purchase_cost'] as num?)?.toDouble()
+        : rawProcurement is List && rawProcurement.isNotEmpty && rawProcurement.first is Map
+            ? (rawProcurement.first['purchase_cost'] as num?)?.toDouble()
+            : null;
+
+    final rawCost = procurementCost ??
+        (json['purchase_cost'] != null && (json['purchase_cost'] as num) > 0
+            ? (json['purchase_cost'] as num).toDouble()
+            : (json['purchaseCost'] != null && (json['purchaseCost'] as num) > 0
+                ? (json['purchaseCost'] as num).toDouble()
+                : (json['cost'] != null && (json['cost'] as num) > 0
+                    ? (json['cost'] as num).toDouble()
+                    : null)));
+    final cost = rawCost ?? defaultCostForSku(skuStr);
 
     return Product(
       id: json['id'] as String,
@@ -104,4 +150,12 @@ class Product {
       createdAt: createdAt ?? this.createdAt,
     );
   }
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is Product && runtimeType == other.runtimeType && id == other.id;
+
+  @override
+  int get hashCode => id.hashCode;
 }

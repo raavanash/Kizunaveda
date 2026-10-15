@@ -8,7 +8,6 @@ import 'package:kizuna_veda/features/auth/presentation/controllers/auth_notifier
 import 'package:kizuna_veda/features/inventory/data/repositories/unconnected_inventory_repository.dart';
 import 'package:kizuna_veda/features/inventory/domain/entities/product.dart';
 import 'package:kizuna_veda/features/inventory/domain/entities/product_inventory_summary.dart';
-import 'package:kizuna_veda/features/inventory/domain/entities/stock_transfer.dart';
 import 'package:kizuna_veda/features/inventory/presentation/controllers/inventory_notifier.dart';
 import 'package:kizuna_veda/features/owner/presentation/screens/in_transit_stock_screen.dart';
 import 'package:kizuna_veda/features/owner/presentation/screens/jaipur_stock_screen.dart';
@@ -17,7 +16,7 @@ import 'package:kizuna_veda/features/owner/presentation/screens/owner_home_scree
 
 void main() {
   group('V1 Inventory Flow Business Calculations & Location Separation', () {
-    test('Exact calculation test: Packed=1000, Dispatched=980, Received=975, Sold=300', () {
+    test('Independent store calculations: Packed=1000, NeemranaStockIn=200, NeemranaSold=300, JaipurStockIn=500, JaipurSold=150', () {
       final product = Product(
         id: 'prod-spec-1',
         name: 'Tulsi Extract',
@@ -29,17 +28,20 @@ void main() {
       final summary = ProductInventorySummary(
         product: product,
         totalPacked: 1000,
-        totalDispatched: 980,
-        totalReceived: 975,
-        totalSold: 300,
+        totalNeemranaStockIn: 200,
+        totalNeemranaSold: 300,
+        totalJaipurStockIn: 500,
+        totalJaipurSold: 150,
+        totalDispatched: 0,
+        totalReceived: 0,
       );
 
-      expect(summary.neemranaFinishedStock, 20); // 1000 - 980
-      expect(summary.jaipurFinishedStock, 675); // 975 - 300
-      expect(summary.transferDiscrepancy, 5); // 980 - 975
+      expect(summary.neemranaFinishedStock, 900); // 1000 + 200 - 300
+      expect(summary.jaipurFinishedStock, 350); // 500 - 150
+      expect(summary.transferDiscrepancy, 0); // Transfers permanently disabled
     });
 
-    test('Neemrana and Jaipur inventory remain strictly separate', () {
+    test('Neemrana and Jaipur inventory remain strictly separate and independent', () {
       final product = Product(
         id: 'prod-sep-1',
         name: 'Neem Powder',
@@ -48,18 +50,20 @@ void main() {
         createdAt: DateTime.now(),
       );
 
-      // Scenario: Neemrana packs 500, dispatches 300. Jaipur has received 0, sold 0.
-      final summaryBeforeReceipt = ProductInventorySummary(
+      final summary = ProductInventorySummary(
         product: product,
         totalPacked: 500,
-        totalDispatched: 300,
+        totalNeemranaStockIn: 50,
+        totalNeemranaSold: 100,
+        totalJaipurStockIn: 200,
+        totalJaipurSold: 50,
+        totalDispatched: 0,
         totalReceived: 0,
-        totalSold: 0,
       );
 
-      expect(summaryBeforeReceipt.neemranaFinishedStock, 200); // 500 - 300
-      expect(summaryBeforeReceipt.jaipurFinishedStock, 0); // Not received yet!
-      expect(summaryBeforeReceipt.transferDiscrepancy, 300); // Pending/discrepancy
+      expect(summary.neemranaFinishedStock, 450); // 500 + 50 - 100
+      expect(summary.jaipurFinishedStock, 150); // 200 - 50
+      expect(summary.transferDiscrepancy, 0);
     });
 
     test('Raw material stock remains independent from finished-product stock', () async {
@@ -127,65 +131,48 @@ void main() {
       expect(successReceipt, isTrue);
     });
 
-    test('Jaipur cannot receive more than dispatched quantity', () async {
+    test('Inter-store stock transfers are permanently disabled on repository', () async {
       final product = notifier.products.first;
 
-      final transfer = await repository.createTransfer(
-        productId: product.id,
-        dispatchedQuantity: 50,
+      expect(
+        () => repository.createTransfer(
+          productId: product.id,
+          dispatchedQuantity: 50,
+        ),
+        throwsA(isA<UnsupportedError>()),
       );
 
-      // Attempting to receive 60 (> 50) must throw exception
       expect(
         () => repository.confirmTransferReceipt(
-          transferId: transfer.id,
-          receivedQuantity: 60,
+          transferId: 'trans-1',
+          receivedQuantity: 50,
         ),
-        throwsA(isA<Exception>()),
+        throwsA(isA<UnsupportedError>()),
       );
     });
 
-    test('Discrepancy reason is required when received != dispatched', () async {
+    test('Inter-store stock transfers are permanently disabled on notifier', () async {
       final product = notifier.products.first;
 
-      final transfer = await repository.createTransfer(
+      final transferSuccess = await notifier.createTransfer(
         productId: product.id,
-        dispatchedQuantity: 50,
+        dispatchedQuantity: 10,
       );
-
-      // Attempting to confirm receipt with received=45 and null discrepancyReason must fail
+      expect(transferSuccess, isFalse);
       expect(
-        () => repository.confirmTransferReceipt(
-          transferId: transfer.id,
-          receivedQuantity: 45,
-          discrepancyReason: null,
-        ),
-        throwsA(isA<Exception>()),
+        notifier.errorMessage,
+        contains('Inter-store stock transfers are permanently disabled'),
       );
 
-      // Confirming with valid discrepancy reason succeeds
-      final confirmed = await repository.confirmTransferReceipt(
-        transferId: transfer.id,
-        receivedQuantity: 45,
-        discrepancyReason: '5 packets damaged in transit',
+      final receiptSuccess = await notifier.confirmTransferReceipt(
+        transferId: 'trans-1',
+        receivedQuantity: 10,
       );
-      expect(confirmed.isReceived, isTrue);
-      expect(confirmed.discrepancy, 5);
-      expect(confirmed.status, TransferStatus.discrepancy);
-    });
-
-    test('Transfer remains pending until receipt is confirmed', () async {
-      final product = notifier.products.first;
-
-      final transfer = await repository.createTransfer(
-        productId: product.id,
-        dispatchedQuantity: 100,
+      expect(receiptSuccess, isFalse);
+      expect(
+        notifier.errorMessage,
+        contains('Inter-store stock transfers are permanently disabled'),
       );
-
-      expect(transfer.isPending, isTrue);
-      expect(transfer.isReceived, isFalse);
-      expect(transfer.receivedQuantity, isNull);
-      expect(transfer.status, TransferStatus.dispatched);
     });
 
     test('Jaipur sale cannot exceed available Jaipur finished stock', () async {
@@ -201,21 +188,6 @@ void main() {
 
       expect(createdSale, isNull);
       expect(notifier.errorMessage, contains('Cannot record sale'));
-    });
-
-    test('Neemrana dispatch cannot exceed available Neemrana finished stock', () async {
-      await notifier.loadInventoryData();
-      final summary = notifier.inventorySummaries.first;
-      final availableNeemranaStock = summary.neemranaFinishedStock;
-
-      // Attempting to dispatch more than available Neemrana stock fails validation
-      final success = await notifier.createTransfer(
-        productId: summary.product.id,
-        dispatchedQuantity: availableNeemranaStock + 999,
-      );
-
-      expect(success, isFalse);
-      expect(notifier.errorMessage, contains('Cannot dispatch'));
     });
   });
 
@@ -271,7 +243,8 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('In-Transit Stock & Discrepancies'), findsWidgets);
-      expect(find.text('Inter-Unit Transfer Control'), findsOneWidget);
+      expect(find.text('Transfers Permanently Disabled'), findsOneWidget);
+      expect(find.text('Inter-Unit Transfer Control (Archived)'), findsOneWidget);
       expect(find.text('Pending Receipt'), findsWidgets);
     });
 

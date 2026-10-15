@@ -10,6 +10,7 @@ import '../entities/stock_transfer.dart';
 import '../entities/stock_in_record.dart';
 import '../entities/store_inventory.dart';
 import '../entities/stock_adjustment.dart';
+import '../../../sales/domain/entities/cart_item.dart';
 
 /// Abstract repository interface defining operations for V1 Inventory Foundation.
 abstract class IInventoryRepository {
@@ -19,11 +20,25 @@ abstract class IInventoryRepository {
   /// Fetch all active products
   Future<List<Product>> getProducts();
 
-  /// Create a new product entry
+  /// Create a new product entry (OWNER role authorized)
   Future<Product> addProduct({
     required String name,
     required String packageSize,
     required String sku,
+    double? standardSellingPrice,
+    double? purchaseCost,
+    bool active = true,
+  });
+
+  /// Update an existing product entry (OWNER role authorized)
+  Future<Product> updateProduct({
+    required String id,
+    String? name,
+    String? packageSize,
+    String? sku,
+    double? standardSellingPrice,
+    double? purchaseCost,
+    bool? active,
   });
 
   /// Update standard selling price and purchase cost of a product (OWNER role authorized)
@@ -92,13 +107,22 @@ abstract class IInventoryRepository {
     String? notes,
   });
 
+  /// Atomically receive finished stock into a store location (additive intake)
+  Future<StockAdjustment> receiveStoreStock({
+    required String locationId,
+    required String productId,
+    required int quantity,
+    String? notes,
+  });
+
   /// Fetch auditable stock adjustments ledger
   Future<List<StockAdjustment>> getStockAdjustments({String? locationId});
 
-  /// Fetch all inter-facility transfers
+  /// Fetch all inter-facility transfers (preserved for read-only historical audit)
   Future<List<StockTransfer>> getTransfers();
 
-  /// Dispatch finished stock from Neemrana to Jaipur
+  /// Inter-store transfers are permanently disabled.
+  /// Throws [UnsupportedError] because Neemrana and Jaipur operate as independent stores.
   Future<StockTransfer> createTransfer({
     required String productId,
     required int dispatchedQuantity,
@@ -107,7 +131,8 @@ abstract class IInventoryRepository {
     DateTime? dispatchedAt,
   });
 
-  /// Confirm receipt of a transfer at Jaipur
+  /// Inter-store transfers are permanently disabled.
+  /// Throws [UnsupportedError] because Neemrana and Jaipur operate as independent stores.
   Future<StockTransfer> confirmTransferReceipt({
     required String transferId,
     required int receivedQuantity,
@@ -115,13 +140,22 @@ abstract class IInventoryRepository {
     DateTime? receivedAt,
   });
 
-  /// Fetch all sales
-  Future<List<Sale>> getSales();
+  /// Fetch sales with server-side pagination, ordering, and optional location filter.
+  /// [limit] - Maximum number of sales records to fetch (default: 50).
+  /// [offset] - 0-based row offset for pagination (default: 0).
+  /// [locationId] - Optional store location UUID filter.
+  Future<List<Sale>> getSales({
+    int limit = 50,
+    int offset = 0,
+    String? locationId,
+  });
 
-  /// Record a POS retail sale at Neemrana or Jaipur
+  /// Record a POS retail sale at Neemrana or Jaipur (supports multi-item cart and idempotency)
   Future<Sale> recordSale({
-    required String productId,
-    required int quantity,
+    String? productId,
+    int? quantity,
+    List<CartItem>? items,
+    String? clientRequestId,
     String? customerName,
     String? customerPhone,
     String paymentMethod = 'CASH',
@@ -136,6 +170,7 @@ abstract class IInventoryRepository {
     double? unitPrice,
     double discount = 0.0,
     DateTime? soldAt,
+    String? callerRole,
   });
 
   /// Void a completed sale (OWNER role authorized)

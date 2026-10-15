@@ -1,4 +1,4 @@
-/// Line item for a retail sale bill at Jaipur.
+/// Line item for a retail sale bill at Jaipur or Neemrana.
 class SaleItem {
   final String id;
   final String saleId;
@@ -8,6 +8,9 @@ class SaleItem {
   final double discount;
   final double? unitCost;
   final DateTime createdAt;
+  final String? productName;
+  final String? sku;
+  final String? packageSize;
 
   const SaleItem({
     required this.id,
@@ -18,6 +21,9 @@ class SaleItem {
     this.discount = 0.0,
     this.unitCost,
     required this.createdAt,
+    this.productName,
+    this.sku,
+    this.packageSize,
   });
 
   /// Computed line item total: (quantity * unitPrice) - discount
@@ -33,6 +39,9 @@ class SaleItem {
       'discount_amount': discount,
       'unit_cost': unitCost,
       'created_at': createdAt.toIso8601String(),
+      if (productName != null) 'product_name': productName,
+      if (sku != null) 'sku': sku,
+      if (packageSize != null) 'package_size': packageSize,
     };
   }
 
@@ -49,14 +58,29 @@ class SaleItem {
               json['discount'] ??
               0) as num)
           .toDouble(),
-      unitCost: (json['unit_cost'] ??
-                  json['unitCost'] ??
-                  json['purchase_cost']) !=
-              null
-          ? ((json['unit_cost'] ?? json['unitCost'] ?? json['purchase_cost'])
-                  as num)
-              .toDouble()
-          : null,
+      unitCost: () {
+        final rawProc = json['sale_item_procurement_costs'];
+        final double? procCost = rawProc is Map
+            ? (rawProc['unit_cost'] as num?)?.toDouble()
+            : rawProc is List && rawProc.isNotEmpty && rawProc.first is Map
+                ? (rawProc.first['unit_cost'] as num?)?.toDouble()
+                : null;
+        if (procCost != null) return procCost;
+        final raw = json['unit_cost'] ?? json['unitCost'] ?? json['purchase_cost'];
+        if (raw is num && raw > 0) {
+          return raw.toDouble();
+        }
+        return null;
+      }(),
+      productName: (json['product_name'] ??
+          (json['products'] is Map ? json['products']['name'] : null) ??
+          (json['product'] is Map ? json['product']['name'] : null)) as String?,
+      sku: (json['sku'] ??
+          (json['products'] is Map ? json['products']['sku'] : null) ??
+          (json['product'] is Map ? json['product']['sku'] : null)) as String?,
+      packageSize: (json['package_size'] ??
+          (json['products'] is Map ? json['products']['package_size'] : null) ??
+          (json['product'] is Map ? json['product']['package_size'] : null)) as String?,
       createdAt: json['created_at'] != null
           ? DateTime.parse(json['created_at'] as String)
           : DateTime.now(),
